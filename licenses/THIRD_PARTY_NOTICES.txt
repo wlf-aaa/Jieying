@@ -1,0 +1,42 @@
+截影 (Jieying) — 第三方组件声明 / Third-party notices
+=====================================================
+
+本软件使用了以下第三方组件，各自的许可证全文见同目录下的文件。
+This software uses the following third-party components; full license texts are in this folder.
+
+
+1. Qt 6.10.3 — The Qt Company Ltd. and contributors
+   许可证 / License: GNU LGPL v3 (LGPL-3.0.txt, which incorporates GPL-3.0.txt)
+   使用的模块 / Modules: Qt Core, Gui, Widgets, Network, Concurrent, Svg and plugins
+   Qt 以动态链接库 (Qt6*.dll 及 plugins 目录) 的形式随程序分发，未做修改。
+   你可以用自己编译或修改过的同版本 Qt 库替换这些 DLL。
+   Qt is distributed unmodified as dynamically linked libraries (Qt6*.dll and the plugin
+   folders); you may replace them with your own build of the same Qt version.
+   源代码 / Source code: https://download.qt.io/archive/qt/6.10/6.10.3/single/
+   网站 / Website: https://www.qt.io/
+
+2. ONNX Runtime 1.31.1 — Microsoft Corporation
+   许可证 / License: MIT (onnxruntime-LICENSE.txt)
+   其包含的组件 / Its own third-party components: onnxruntime-ThirdPartyNotices.txt
+   来源 / Source: https://github.com/microsoft/onnxruntime
+
+3. PaddleOCR PP-OCRv5 mobile 文字检测/识别模型及字典 / detection & recognition models and dictionary
+   (ocr-models\det.onnx, rec.onnx, dict.txt)
+   原始模型 / Original models: PaddlePaddle Authors — https://github.com/PaddlePaddle/PaddleOCR
+   ONNX 转换 / ONNX conversion: RapidAI RapidOCR — https://github.com/RapidAI/RapidOCR
+   许可证 / License: Apache License 2.0 (Apache-2.0.txt)
+   模型文件未做修改 / The model files are unmodified.
+
+4. ZXing-cpp 3.1.1 — 二维码/条形码识别 / QR code and barcode reading (static library)
+   许可证 / License: Apache License 2.0 (zxing-cpp-LICENSE.txt)
+   来源 / Source: https://github.com/zxing-cpp/zxing-cpp
+   其内置组件 / Bundled components:
+     - libzint (Robin Stuart): BSD-3-Clause (libzint-BSD-3-Clause.txt)
+     - libzueci (gitlost) and its UTF-8 decoder (Bjoern Hoehrmann): libzueci-BSD-3-Clause.txt
+
+5. Microsoft Visual C++ 运行库 / Runtime (msvcp140*.dll, vcruntime140*.dll, concrt140.dll)
+   Microsoft Corporation，按 Visual Studio 可再分发代码条款随程序分发。
+   Redistributed under the Visual Studio redistributable code terms.
+
+截影本身的代码不包含以上组件的源代码。
+截影 does not include the source code of the components above.

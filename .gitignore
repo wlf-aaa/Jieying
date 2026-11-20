@@ -1,0 +1,17 @@
+# Build output
+/build/
+
+# Downloaded dependencies: run tools/fetch_ocr_deps.ps1 to restore
+/third_party/
+
+# Editor/IDE
+.vs/
+.vscode/
+*.user
+
+# Release packages (tools/package.ps1)
+/dist/
+
+# Local development records
+/TODO.md
+/.workbuddy/
