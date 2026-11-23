@@ -13,8 +13,9 @@ namespace Config {
 // ---- hotkeys --------------------------------------------------------------------------------
 
 enum class Hotkey { Capture, PinClipboard, LongShot, RecordGif, RecordMp4, TogglePins, CaptureScreen, CaptureWindow,
-                    NextPinGroup };
+                    NextPinGroup, RepeatCapture };
 inline constexpr Hotkey kHotkeys[] = {Hotkey::Capture,       Hotkey::CaptureScreen, Hotkey::CaptureWindow,
+                                      Hotkey::RepeatCapture,
                                       Hotkey::PinClipboard,  Hotkey::TogglePins,    Hotkey::NextPinGroup,
                                       Hotkey::LongShot,
                                       Hotkey::RecordGif,     Hotkey::RecordMp4};
@@ -30,6 +31,9 @@ QKeySequence schemeHotkey(HotkeyScheme scheme, Hotkey hotkey); // empty: unassig
 // The scheme the current keys match exactly, else Custom.
 HotkeyScheme currentHotkeyScheme();
 
+bool pauseHotkeysInFullscreen();
+void setPauseHotkeysInFullscreen(bool pause);
+
 // ---- capture --------------------------------------------------------------------------------
 
 // What Enter / double-click inside the selection does.
@@ -43,6 +47,10 @@ void setShowMagnifier(bool show);
 // How many recent captures to keep for re-pinning (0 = keep none).
 int historySize();
 void setHistorySize(int count);
+
+enum class PinWheelAction { Zoom, Opacity, Disabled };
+PinWheelAction pinWheelAction(bool control);
+void setPinWheelAction(bool control, PinWheelAction action);
 
 // ---- saving ---------------------------------------------------------------------------------
 

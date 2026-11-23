@@ -57,9 +57,12 @@ QIcon CaptureHistory::thumbnail(const QFileInfo &entry)
         return *cached;
     QImageReader reader(key);
     const QSize size = reader.size();
-    if (size.isValid())
-        reader.setScaledSize(size.scaled(QSize(96, 64), Qt::KeepAspectRatio));
-    const QIcon icon(QPixmap::fromImage(reader.read()));
+    if (!size.isEmpty())
+        reader.setScaledSize(size.scaled(QSize(96, 64), Qt::KeepAspectRatio).expandedTo(QSize(1, 1)));
+    const QImage image = reader.read();
+    if (image.isNull())
+        return {};
+    const QIcon icon(QPixmap::fromImage(image));
     m_thumbnails.insert(key, icon);
     return icon;
 }

@@ -1,7 +1,9 @@
 // Headless UI test: drives SelectionOverlay on Qt's offscreen platform with synthetic
 // events and saves what it renders. Usage: overlay_test [output-dir]
+// Mixed-scale screens (from repository root): pass -platform offscreen:configfile=tests/toolbar_screens.json.
 #include "beautify.h"
 #include "beautifydialog.h"
+#include "config.h"
 #include "imageio.h"
 #include "pinboard.h"
 #include "pinwindow.h"
@@ -10,8 +12,10 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QFile>
+#include <QMenu>
 #include <QMimeData>
 #include <QPainter>
 #include <QPlainTextEdit>
@@ -19,9 +23,12 @@
 #include <QScreen>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 #include <QToolButton>
 #include <QUrl>
+#include <QWheelEvent>
 #include <QWindow>
 
 #include <cmath>
@@ -64,6 +71,24 @@ void drag(QWidget *w, QPoint from, QPoint to)
 void selectTool(QWidget *w, int n)
 {
     QTest::keyClick(w, Qt::Key(Qt::Key_0 + n), Qt::ControlModifier);
+}
+
+QToolButton *spotlightButton(QWidget &overlay)
+{
+    for (QToolButton *button : overlay.findChildren<QToolButton *>()) {
+        if (button->toolTip().startsWith(QStringLiteral("聚光")))
+            return button;
+    }
+    return nullptr;
+}
+
+QToolButton *toolbarButton(const CaptureToolbar &toolbar, const QString &tooltipPart)
+{
+    for (QToolButton *button : toolbar.findChildren<QToolButton *>()) {
+        if (button->toolTip().contains(tooltipPart))
+            return button;
+    }
+    return nullptr;
 }
 
 } // namespace
@@ -236,6 +261,83 @@ void testMoreTools(const QDir &out)
     check(pixel({180, 60}) == red && pixel({290, 100}) == red, "tools: one Ctrl+Z restores the whole eraser stroke");
 }
 
+void testSpotlight()
+{
+    QScreen *screen = QGuiApplication::primaryScreen();
+    const qreal dpr = screen->devicePixelRatio();
+    QPixmap shot(screen->geometry().size() * dpr);
+    shot.fill(Qt::white);
+    SelectionOverlay overlay(screen, shot, {});
+    QImage copied;
+    QObject::connect(&overlay, &SelectionOverlay::actionTriggered,
+                     [&](CaptureAction, const QPixmap &image, const QPoint &) { copied = image.toImage(); });
+    const QPoint origin(40, 40);
+    auto copy = [&] { QTest::keyClick(&overlay, Qt::Key_Return); };
+    auto pixel = [&](const QPoint &pos) { return copied.pixelColor((pos - origin) * dpr); };
+    auto dimmed = [](const QColor &color) { return color.lightness() > 0 && color.lightness() < 220; };
+
+    overlay.show();
+    check(QTest::qWaitForWindowExposed(&overlay), "spotlight: overlay exposed");
+    drag(&overlay, origin, {540, 380});
+
+    QToolButton *spotlight = spotlightButton(overlay);
+    check(spotlight && !spotlight->icon().isNull(), "spotlight: toolbar button has its icon");
+    if (!spotlight)
+        return;
+
+    selectTool(&overlay, 1);
+    drag(&overlay, {330, 100}, {420, 200});
+    copy();
+    const QColor ordinaryMark = pixel({330, 150});
+    const QPoint outside(485, 320), first(105, 110), overlap(185, 155), second(245, 195);
+    QTest::mouseClick(spotlight, Qt::LeftButton);
+    QTest::mouseClick(&overlay, Qt::LeftButton, {}, first);
+    copy();
+    check(pixel(outside) == Qt::white, "spotlight: a click leaves the image unchanged");
+
+    QTest::mousePress(&overlay, Qt::LeftButton, {}, {85, 90});
+    QTest::mouseMove(&overlay, {210, 180});
+    const QImage draft = overlay.grab().toImage();
+    check(draft.pixelColor(first * dpr) == Qt::white && dimmed(draft.pixelColor(outside * dpr)),
+          "spotlight: drawing previews the clear area and its surroundings");
+    QTest::mouseRelease(&overlay, Qt::LeftButton, {}, {210, 180});
+    drag(&overlay, {275, 230}, {160, 130});
+    copy();
+    check(pixel(first) == Qt::white && pixel(overlap) == Qt::white && pixel(second) == Qt::white
+              && dimmed(pixel(outside)),
+          "spotlight: two overlapping frames share one mask and preserve both interiors");
+    check(pixel(outside) == draft.pixelColor(outside * dpr) && pixel({330, 150}) == ordinaryMark
+              && ordinaryMark != Qt::white,
+          "spotlight: preview and export use the same dimming and ordinary marks stay above it");
+
+    QTest::keyClick(&overlay, Qt::Key_Z, Qt::ControlModifier);
+    copy();
+    check(pixel(first) == Qt::white && dimmed(pixel(second)), "spotlight: undo removes the last frame");
+    QTest::keyClick(&overlay, Qt::Key_Y, Qt::ControlModifier);
+    copy();
+    check(pixel(second) == Qt::white, "spotlight: redo restores the last frame");
+
+    drag(&overlay, {85, 130}, {105, 165});
+    copy();
+    check(dimmed(pixel(first)) && pixel({130, 180}) == Qt::white, "spotlight: dragging the border moves the frame");
+    drag(&overlay, {105, 125}, {90, 100});
+    copy();
+    check(pixel(first) == Qt::white && pixel({130, 180}) == Qt::white, "spotlight: dragging a handle resizes the frame");
+    QTest::keyClick(&overlay, Qt::Key_Z, Qt::ControlModifier);
+    copy();
+    check(dimmed(pixel(first)) && pixel({130, 180}) == Qt::white, "spotlight: undo restores the pre-resize frame");
+
+    QTest::mouseClick(&overlay, Qt::LeftButton, {}, {105, 160});
+    QTest::keyClick(&overlay, Qt::Key_Delete);
+    copy();
+    check(dimmed(pixel({130, 180})) && pixel(second) == Qt::white, "spotlight: Delete removes only the selected frame");
+    QTest::mouseClick(spotlight, Qt::LeftButton);
+    QTest::keyClick(&overlay, Qt::Key_9, Qt::ShiftModifier);
+    drag(&overlay, {285, 175}, {265, 175});
+    copy();
+    check(pixel(outside) == Qt::white, "spotlight: erasing the last frame removes the mask");
+}
+
 // Check keyboard shortcuts for color picking, selection movement, tools and OCR.
 void testBorrowedKeys()
 {
@@ -277,6 +379,87 @@ void testBorrowedKeys()
     check(actions.last().first == CaptureAction::Ocr, "keys: plain O recognizes text");
     QTest::keyClick(&overlay, Qt::Key_S, Qt::ControlModifier | Qt::ShiftModifier);
     check(actions.last().first == CaptureAction::QuickSave, "keys: Ctrl+Shift+S saves without asking");
+}
+
+void testPinPositionLock()
+{
+    const QPixmap image = makeShot({160, 100});
+    auto *pin = new PinWindow(image, {300, 300});
+    pin->show();
+    check(QTest::qWaitForWindowExposed(pin), "pin position lock: pin shown");
+
+    const auto withMenu = [pin](auto useMenu) {
+        const auto connection = QObject::connect(pin, &PinWindow::menuAboutToShow, pin,
+                                                 [useMenu](QMenu *menu) {
+            QTimer::singleShot(0, menu, [menu, useMenu] {
+                useMenu(menu);
+                menu->close();
+            });
+        });
+        const QPoint local = pin->rect().center();
+        QContextMenuEvent event(QContextMenuEvent::Mouse, local, pin->mapToGlobal(local));
+        QApplication::sendEvent(pin, &event);
+        QObject::disconnect(connection);
+    };
+    const auto actionByText = [](QMenu *menu, const QString &text) -> QAction * {
+        for (QAction *action : menu->actions()) {
+            if (action->text() == text)
+                return action;
+        }
+        return nullptr;
+    };
+
+    withMenu([&](QMenu *menu) {
+        QAction *lock = actionByText(menu, QStringLiteral("锁定位置"));
+        check(lock && lock->isCheckable() && !lock->isChecked(),
+              "pin position lock: menu action starts unchecked");
+        if (lock)
+            lock->trigger();
+    });
+
+    const QPoint start = pin->pos();
+    drag(pin, {30, 30}, {65, 50});
+    check(pin->pos() == start, "pin position lock: dragging leaves the window in place");
+
+    QApplication::clipboard()->clear();
+    withMenu([&](QMenu *menu) {
+        QAction *copy = actionByText(menu, QStringLiteral("复制"));
+        if (copy)
+            copy->trigger();
+    });
+    check(QApplication::clipboard()->image() == image.toImage(),
+          "pin position lock: Copy still puts the pin image on the clipboard");
+
+    const QTemporaryDir saveFolder;
+    check(saveFolder.isValid(), "pin position lock: temporary save folder created");
+    if (saveFolder.isValid()) {
+        const QString previousSaveDir = Config::saveDir();
+        const bool previousAsk = Config::askWhereToSave();
+        Config::setSaveDir(saveFolder.path());
+        Config::setAskWhereToSave(false);
+        withMenu([&](QMenu *menu) {
+            QAction *save = actionByText(menu, QStringLiteral("另存为…"));
+            if (save)
+                save->trigger();
+        });
+        Config::setAskWhereToSave(previousAsk);
+        Config::setSaveDir(previousSaveDir);
+        const QDir dir(saveFolder.path());
+        const QStringList files = dir.entryList(QDir::Files);
+        check(files.size() == 1 && QImage(dir.filePath(files.first())) == image.toImage(),
+              "pin position lock: Save As still writes the pin image");
+    }
+
+    withMenu([&](QMenu *menu) {
+        QAction *lock = actionByText(menu, QStringLiteral("锁定位置"));
+        check(lock && lock->isChecked(), "pin position lock: menu action shows the locked state");
+        if (lock)
+            lock->trigger();
+    });
+    const QPoint unlocked = pin->pos();
+    drag(pin, {30, 30}, {65, 50});
+    check(pin->pos() != unlocked, "pin position lock: dragging moves the window after unlocking");
+    pin->close();
 }
 
 // Pins: rotate, flip, click-through, Delete; what F3 pins from files and text.
@@ -418,6 +601,106 @@ void testPinGroups()
     check(a.isNull() && b.isNull() && c.isNull() && board.currentGroup() == 1, "groups: closing all clears every group");
 }
 
+void testRestoreClosedPin()
+{
+    PinBoard board;
+    check(!board.canRestoreLastClosed() && !board.restoreLastClosed(),
+          "restore pin: starts without a closed image");
+
+    QImage source(200, 100, QImage::Format_RGB32);
+    source.fill(Qt::white);
+    QPainter(&source).fillRect(0, 0, 20, 20, Qt::red);
+    QPixmap image = QPixmap::fromImage(source);
+    image.setDevicePixelRatio(2.0);
+    board.add(new PinWindow(image, {100, 100}));
+    board.toggleCurrent();
+    board.showGroup(2);
+    check(!board.canRestoreLastClosed(), "restore pin: hiding and switching groups do not make a restore point");
+
+    QPointer<PinWindow> closed = new PinWindow(image, {300, 300});
+    board.add(closed);
+    closed->rotate(90);
+    const QPoint anchor(10, 10);
+    QWheelEvent zoom(anchor, closed->mapToGlobal(anchor), {}, {0, 120}, Qt::NoButton,
+                     Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(closed, &zoom);
+    QTest::keyClick(closed, Qt::Key_Minus, Qt::ControlModifier);
+    const qreal opacity = closed->windowOpacity();
+    check(opacity < 1.0 && closed->size() == QSize(75, 130), "restore pin: fixture changes opacity and zoom");
+
+    QObject::connect(closed, &PinWindow::menuAboutToShow, closed, [](QMenu *menu) {
+        QTimer::singleShot(0, menu, [menu] {
+            for (QAction *action : menu->actions()) {
+                if (action->text() == QStringLiteral("锁定位置"))
+                    action->trigger();
+            }
+            menu->close();
+        });
+    });
+    const QPoint local = closed->rect().center();
+    QContextMenuEvent menu(QContextMenuEvent::Mouse, local, closed->mapToGlobal(local));
+    QApplication::sendEvent(closed, &menu);
+
+    const QRect geometry = closed->geometry();
+    QTest::keyClick(closed, Qt::Key_Escape);
+    check(closed && !closed->isVisible() && board.canRestoreLastClosed() && board.count(2) == 0,
+          "restore pin: Escape remembers the pin and removes it from the group immediately");
+    board.showGroup(1);
+    PinWindow *restored = board.restoreLastClosed();
+    check(restored && restored != closed && restored->isVisible() && board.currentGroup() == 2
+              && board.count(2) == 1 && restored->group() == 2,
+          "restore pin: reopens the image in its original group before the old window is deleted");
+    if (restored) {
+        const QImage rotated = restored->image().toImage();
+        check(rotated.size() == QSize(100, 200) && rotated.pixelColor(95, 5) == Qt::red
+                  && rotated.pixelColor(5, 5) == Qt::white && restored->image().devicePixelRatio() == 2.0,
+              "restore pin: preserves rotated pixels and image pixel density");
+        check(restored->geometry() == geometry && restored->windowOpacity() == opacity,
+              "restore pin: preserves location, zoom and opacity");
+        const QPoint start = restored->pos();
+        drag(restored, {30, 30}, {55, 50});
+        check(restored->pos() == start, "restore pin: keeps the pin's location locked");
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        check(closed.isNull() && board.pins().contains(restored) && !board.canRestoreLastClosed()
+                  && !board.restoreLastClosed(),
+              "restore pin: the restore point is consumed and old window deletion leaves the new pin intact");
+        QTest::mouseDClick(restored, Qt::LeftButton, {}, restored->rect().center());
+        check(board.canRestoreLastClosed() && board.count(2) == 0,
+              "restore pin: double-clicking the restored pin closes it and remembers it again");
+    }
+    board.closeAll();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
+void testRestoreAfterClosingAllPins()
+{
+    const QPixmap image = makeShot({160, 100});
+    PinBoard board;
+    board.add(new PinWindow(image, {100, 100}));
+    board.showGroup(2);
+    auto *last = new PinWindow(image, {200, 200});
+    board.add(last);
+    last->flip(true);
+    const QImage expected = last->image().toImage();
+    last->setClickThrough(true);
+    last->move({100000, 100000});
+    const QRect workArea = QGuiApplication::primaryScreen()->availableGeometry();
+    check(!workArea.intersects(last->geometry()), "restore pin: fixture is outside the primary screen's work area");
+
+    board.closeAll();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    PinWindow *restored = board.restoreLastClosed();
+    check(restored && restored->group() == 2 && restored->image().toImage() == expected
+              && !board.canRestoreLastClosed() && board.pins().size() == 1,
+          "restore pin: closing all remembers only the final pin closed");
+    check(restored && !restored->clickThrough() && !board.anyClickThrough(),
+          "restore pin: previously click-through pins reopen with mouse interaction enabled");
+    check(restored && workArea.contains(restored->geometry().center()),
+          "restore pin: a pin from an unavailable screen moves into the primary screen's work area");
+    board.closeAll();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
 // Ruler marks and freeform (hand-drawn) regions.
 void testRulerAndFreeform(const QDir &out)
 {
@@ -479,6 +762,15 @@ void testRulerAndFreeform(const QDir &out)
         check(copied.pixelColor(QPoint(100, 30) * dpr).alpha() == 255, "freeform: inside the shape is kept");
         check(copied.pixelColor(QPoint(10, 190) * dpr).alpha() == 0 && copied.pixelColor(QPoint(190, 190) * dpr).alpha() == 0,
               "freeform: outside the shape is transparent");
+        if (QToolButton *spotlight = spotlightButton(overlay)) {
+            spotlight->click();
+            drag(&overlay, {170, 125}, {230, 170});
+            QTest::keyClick(&overlay, Qt::Key_Return);
+            const QColor dimmed = copied.pixelColor(QPoint(100, 100) * dpr);
+            check(copied.pixelColor(QPoint(100, 50) * dpr) == Qt::white && dimmed.alpha() == 255
+                      && dimmed.lightness() < 220 && copied.pixelColor(QPoint(10, 190) * dpr).alpha() == 0,
+                  "spotlight: freeform export darkens the crop and preserves its transparent corners");
+        }
     }
 }
 
@@ -542,6 +834,113 @@ void testPreselect()
     check(copied.size() == screen->geometry().size() * dpr, "preselect: full screen");
 }
 
+void testCaptureToolbarLayout(const QDir &out)
+{
+    for (QScreen *screen : QGuiApplication::screens()) {
+        const qreal dpr = screen->devicePixelRatio();
+        const QRect geometry = screen->geometry();
+        std::printf("      toolbar screen: %dx%d at (%d, %d), scale %.2f\n", geometry.width(), geometry.height(),
+                    geometry.x(), geometry.y(), double(dpr));
+        SelectionOverlay overlay(screen, makeShot(geometry.size() * dpr), {});
+        overlay.show();
+        check(QTest::qWaitForWindowExposed(&overlay), "toolbar: overlay exposed");
+        auto *toolbar = overlay.findChild<CaptureToolbar *>();
+        if (!toolbar) {
+            check(false, "toolbar: capture controls exist");
+            continue;
+        }
+
+        auto preselect = [&](const QRect &logical) {
+            overlay.preselect(QRect(logical.topLeft() * dpr, logical.size() * dpr));
+            QCoreApplication::processEvents();
+        };
+        preselect(QRect(24, 24, qMin(250, overlay.width() - 48), 180));
+        auto *undo = toolbarButton(*toolbar, QStringLiteral("Ctrl+Z"));
+        auto *ocr = toolbarButton(*toolbar, QStringLiteral("Ctrl+O"));
+        auto *rectangle = toolbarButton(*toolbar, QStringLiteral("Ctrl+1"));
+        auto *swatch = toolbarButton(*toolbar, QStringLiteral("#FF3B30"));
+        if (undo && ocr && rectangle && swatch) {
+            const auto top = [&](const QWidget *control) { return control->mapTo(toolbar, QPoint()).y(); };
+            check(top(undo) + undo->height() <= top(ocr), "toolbar: image output starts below annotation history");
+            check(!swatch->isVisible(), "toolbar: drawing options start hidden");
+            selectTool(&overlay, 1);
+            QCoreApplication::processEvents();
+            check(swatch->isVisible() && top(swatch) >= top(undo) + undo->height()
+                      && top(swatch) + swatch->height() <= top(ocr),
+                  "toolbar: active drawing options sit directly below the annotation tools");
+            selectTool(&overlay, 1);
+        } else {
+            check(false, "toolbar: annotation, history, style and output controls exist");
+        }
+        if (overlay.width() >= 800) {
+            const QRect leftStrip(0, 0, 80, overlay.height());
+            preselect(leftStrip);
+            check(overlay.rect().contains(toolbar->geometry()) && toolbar->geometry().left() > leftStrip.right(),
+                  "toolbar: uses free space beside a full-height selection");
+        }
+
+        overlay.resize(qMin(330, overlay.width()), qMin(560, overlay.height()));
+        const QRect narrowStrip(0, 0, 80, overlay.height());
+        preselect(narrowStrip);
+        check(overlay.rect().contains(toolbar->geometry()) && toolbar->geometry().left() > narrowStrip.right(),
+              "toolbar: wraps to fit beside a selection on a narrow display");
+
+        preselect(overlay.rect());
+        check(toolbar->isVisible() && overlay.rect().contains(toolbar->geometry()),
+              "toolbar: fits a narrow portrait display");
+
+        overlay.resize(qMin(190, overlay.width()), overlay.height());
+        const QRect full = overlay.rect();
+        const QRect bottomRight(full.width() - 120, full.height() - 90, 120, 90);
+        preselect(bottomRight);
+        selectTool(&overlay, 1);
+        QCoreApplication::processEvents();
+        check(full.contains(toolbar->geometry()) && toolbar->geometry().bottom() < bottomRight.top(),
+              "toolbar: stays above a bottom-right selection while options are open");
+
+        bool controlsReachable = true;
+        for (QToolButton *button : toolbar->findChildren<QToolButton *>()) {
+            const QRect buttonRect(button->mapTo(toolbar, QPoint()), button->size());
+            controlsReachable &= button->isVisibleTo(toolbar) && toolbar->rect().contains(buttonRect)
+                                 && full.contains(buttonRect.translated(toolbar->pos()))
+                                 && buttonRect.width() >= 30 && buttonRect.height() >= 30
+                                 && toolbar->childAt(buttonRect.center()) == button;
+        }
+        check(controlsReachable, "toolbar: every command and style control has a 30 px clickable area");
+        overlay.grab().save(out.filePath(QStringLiteral("toolbar_%1x.png").arg(dpr)));
+    }
+}
+
+void testCaptureToolbarKeyboard()
+{
+    QScreen *screen = QGuiApplication::primaryScreen();
+    const qreal dpr = screen->devicePixelRatio();
+    SelectionOverlay overlay(screen, makeShot(screen->geometry().size() * dpr), {});
+    const QRect selection(QPoint(60, 70) * dpr, QSize(300, 160) * dpr);
+    overlay.show();
+    check(QTest::qWaitForWindowExposed(&overlay), "toolbar keyboard: overlay exposed");
+    overlay.preselect(selection);
+
+    auto *toolbar = overlay.findChild<CaptureToolbar *>();
+    auto *rectangle = toolbar ? toolbarButton(*toolbar, QStringLiteral("Ctrl+1")) : nullptr;
+    overlay.activateWindow();
+    overlay.setFocus();
+    QTest::keyClick(&overlay, Qt::Key_Tab);
+    check(rectangle && rectangle->hasFocus(), "toolbar keyboard: Tab reaches the annotation tools");
+    if (!rectangle || !rectangle->hasFocus())
+        return;
+
+    QTest::keyClick(rectangle, Qt::Key_Space);
+    check(toolbar->tool() == Tool::Rect && rectangle->isChecked(), "toolbar keyboard: Space activates a focused tool");
+    QPoint copiedOrigin;
+    QObject::connect(&overlay, &SelectionOverlay::actionTriggered,
+                     [&](CaptureAction, const QPixmap &, const QPoint &origin) { copiedOrigin = origin; });
+    QTest::keyClick(rectangle, Qt::Key_Right);
+    QTest::keyClick(rectangle, Qt::Key_Return);
+    check(copiedOrigin == (selection.topLeft() + QPoint(1, 0)) / dpr + screen->geometry().topLeft(),
+          "toolbar keyboard: the focused button preserves selection movement and Enter confirmation");
+}
+
 // Annotating a pinned image: the region is fixed and "done" hands back exactly that region.
 void testFixedRegion(const QDir &out)
 {
@@ -578,6 +977,27 @@ void testFixedRegion(const QDir &out)
     selectTool(&overlay, 1); // tool off
     QTest::mouseClick(&overlay, Qt::RightButton, {}, {500, 500});
     check(cancelled.size() == 1, "pin editing: right-click without a tool cancels");
+
+    QToolButton *spotlight = spotlightButton(overlay);
+    check(spotlight && spotlight->isVisible(), "spotlight: toolbar button is available when editing a pin");
+    auto *toolbar = overlay.findChild<CaptureToolbar *>();
+    auto *done = toolbar ? toolbarButton(*toolbar, QStringLiteral("完成标注")) : nullptr;
+    auto *save = toolbar ? toolbarButton(*toolbar, QStringLiteral("Ctrl+Shift+S")) : nullptr;
+    auto *ocr = toolbar ? toolbarButton(*toolbar, QStringLiteral("Ctrl+O")) : nullptr;
+    check(done && done->isVisible() && save && !save->isVisible() && ocr && !ocr->isVisible(),
+          "pin editing: keeps the confirmation button and hides capture-only output");
+    if (spotlight && done && !results.isEmpty()) {
+        const QImage original = results.first().second;
+        const QPoint inside = QPoint(55, 55) * dpr;
+        const QPoint outside = QPoint(210, 130) * dpr;
+        spotlight->click();
+        drag(&overlay, {140, 160}, {185, 195});
+        QTest::mouseClick(done, Qt::LeftButton);
+        check(results.size() == 2 && results.last().first == CaptureAction::Pin
+                  && results.last().second.pixelColor(inside) == original.pixelColor(inside)
+                  && results.last().second.pixelColor(outside).lightness() < original.pixelColor(outside).lightness(),
+              "spotlight: applying pin edits returns the spotlighted image");
+    }
 }
 
 int main(int argc, char *argv[])
@@ -683,11 +1103,17 @@ int main(int argc, char *argv[])
     testEditing(out);
     testFixedRegion(out);
     testPreselect();
+    testCaptureToolbarLayout(out);
+    testCaptureToolbarKeyboard();
     testBeautify(out);
     testMoreTools(out);
+    testSpotlight();
     testBorrowedKeys();
+    testPinPositionLock();
     testPins(out);
     testPinGroups();
+    testRestoreClosedPin();
+    testRestoreAfterClosingAllPins();
     testRulerAndFreeform(out);
 
     std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "OK", failures, failures == 1 ? "" : "s");

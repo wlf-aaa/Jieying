@@ -1,10 +1,13 @@
 #pragma once
 
+#include "pinwindow.h"
+
 #include <QList>
 #include <QObject>
 #include <QPointer>
 
-class PinWindow;
+#include <optional>
+
 class QMenu;
 
 // All pinned images, in numbered groups. Only the current group is on screen; switching
@@ -32,6 +35,9 @@ public:
     // Hides the current group's pins, or shows them when all are hidden.
     void toggleCurrent();
     void closeAll();
+    // Reopens the most recently closed pin once, in its original group.
+    bool canRestoreLastClosed() const { return m_lastClosed.has_value(); }
+    PinWindow *restoreLastClosed();
     bool anyClickThrough() const;
     void restoreClicks();
 
@@ -43,9 +49,10 @@ signals:
     void groupShown(int group, int pins);
 
 private:
-    void prune();
+    void registerPin(PinWindow *pin);
     void addMoveMenu(PinWindow *pin, QMenu *menu);
 
     QList<QPointer<PinWindow>> m_pins;
+    std::optional<PinWindow::Snapshot> m_lastClosed;
     int m_current = 1;
 };

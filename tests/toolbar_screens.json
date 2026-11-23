@@ -1,0 +1,6 @@
+{
+  "screens": [
+    { "name": "landscape", "x": 0, "y": 0, "width": 800, "height": 800, "logicalDpi": 96, "logicalBaseDpi": 96 },
+    { "name": "portrait", "x": -492, "y": 120, "width": 492, "height": 840, "logicalDpi": 144, "logicalBaseDpi": 96 }
+  ]
+}

@@ -20,7 +20,7 @@ QList<Config::Hotkey> HotkeyManager::registerAll()
 {
     unregisterAll();
     QList<Config::Hotkey> taken;
-    if (m_suspended)
+    if (registrationPaused())
         return taken;
     for (Config::Hotkey hotkey : Config::kHotkeys) {
         const QKeySequence sequence = Config::hotkey(hotkey);
@@ -53,8 +53,27 @@ void HotkeyManager::setSuspended(bool suspended)
 {
     if (suspended == m_suspended)
         return;
+    const bool wasPaused = registrationPaused();
     m_suspended = suspended;
-    if (suspended)
+    refreshAfterPauseChange(wasPaused);
+}
+
+void HotkeyManager::setPausedForFullscreen(bool paused)
+{
+    if (paused == m_pausedForFullscreen)
+        return;
+    const bool wasPaused = registrationPaused();
+    m_pausedForFullscreen = paused;
+    refreshAfterPauseChange(wasPaused);
+    emit fullscreenPauseChanged();
+}
+
+void HotkeyManager::refreshAfterPauseChange(bool wasPaused)
+{
+    const bool paused = registrationPaused();
+    if (paused == wasPaused)
+        return;
+    if (paused)
         unregisterAll();
     else
         registerAll();
@@ -63,7 +82,7 @@ void HotkeyManager::setSuspended(bool suspended)
 QString HotkeyManager::change(Config::Hotkey hotkey, const QKeySequence &sequence)
 {
     const QKeySequence previous = Config::hotkey(hotkey);
-    if (sequence == previous && (sequence.isEmpty() || m_suspended || isRegistered(hotkey)))
+    if (sequence == previous && (sequence.isEmpty() || registrationPaused() || isRegistered(hotkey)))
         return {};
 
     if (!sequence.isEmpty()) {
@@ -80,11 +99,11 @@ QString HotkeyManager::change(Config::Hotkey hotkey, const QKeySequence &sequenc
     m_registered.removeAll(hotkey);
     if (!sequence.isEmpty()) {
         if (!m_keys->add(int(hotkey), sequence)) {
-            if (!m_suspended && !previous.isEmpty() && m_keys->add(int(hotkey), previous)) // keep the old key
+            if (!registrationPaused() && !previous.isEmpty() && m_keys->add(int(hotkey), previous)) // keep the old key
                 m_registered.append(hotkey);
             return tr("已被其他程序占用");
         }
-        if (m_suspended)
+        if (registrationPaused())
             m_keys->remove(int(hotkey));
         else
             m_registered.append(hotkey);

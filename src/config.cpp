@@ -38,6 +38,8 @@ const char *hotkeyKey(Hotkey hotkey)
         return "hotkeys/captureScreen";
     case Hotkey::CaptureWindow:
         return "hotkeys/captureWindow";
+    case Hotkey::RepeatCapture:
+        return "hotkeys/repeatCapture";
     case Hotkey::NextPinGroup:
         return "hotkeys/nextPinGroup";
     }
@@ -77,6 +79,8 @@ QString hotkeyName(Hotkey hotkey)
         return tr("截取全屏");
     case Hotkey::CaptureWindow:
         return tr("截取当前窗口");
+    case Hotkey::RepeatCapture:
+        return tr("重截上次选区");
     }
     return {};
 }
@@ -141,6 +145,16 @@ void setHotkey(Hotkey hotkey, const QKeySequence &sequence)
     write(hotkeyKey(hotkey), sequence.toString());
 }
 
+bool pauseHotkeysInFullscreen()
+{
+    return read("hotkeys/pauseInFullscreen", false).toBool();
+}
+
+void setPauseHotkeysInFullscreen(bool pause)
+{
+    write("hotkeys/pauseInFullscreen", pause);
+}
+
 ConfirmAction confirmAction()
 {
     return ConfirmAction(qBound(0, read("capture/confirmAction", 0).toInt(), 2));
@@ -169,6 +183,20 @@ int historySize()
 void setHistorySize(int count)
 {
     write("capture/historySize", count);
+}
+
+PinWheelAction pinWheelAction(bool control)
+{
+    const auto fallback = control ? PinWheelAction::Opacity : PinWheelAction::Zoom;
+    bool ok = false;
+    const int action = read(control ? "pin/ctrlWheel" : "pin/wheel", int(fallback)).toInt(&ok);
+    return ok && action >= int(PinWheelAction::Zoom) && action <= int(PinWheelAction::Disabled)
+               ? PinWheelAction(action) : fallback;
+}
+
+void setPinWheelAction(bool control, PinWheelAction action)
+{
+    write(control ? "pin/ctrlWheel" : "pin/wheel", int(action));
 }
 
 QString saveDir()

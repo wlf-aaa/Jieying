@@ -17,6 +17,7 @@
 #include <QtConcurrent>
 #include <QtMath>
 
+#include <array>
 #include <cmath>
 
 namespace {
@@ -34,15 +35,52 @@ constexpr qreal kStrokeWidths[] = {2, 4, 8};
 constexpr qreal kFontSizes[] = {14, 20, 30};
 constexpr qreal kMosaicCells[] = {6, 10, 16};
 
+std::array<QPointF, 8> handleCenters(const QRectF &r)
+{
+    return {r.topLeft(), QPointF(r.center().x(), r.top()), r.topRight(), QPointF(r.right(), r.center().y()),
+            r.bottomRight(), QPointF(r.center().x(), r.bottom()), r.bottomLeft(), QPointF(r.left(), r.center().y())};
+}
+
+QRect toolbarGeometry(const CaptureToolbar &toolbar, const QRect &bounds, const QRect &selection)
+{
+    constexpr int kGap = 6;
+    const auto positionIn = [&](const QRect &space, const QSize &size) {
+        const int maxX = qMax(space.left(), space.right() + 1 - size.width());
+        const int maxY = qMax(space.top(), space.bottom() + 1 - size.height());
+        const int x = qBound(space.left(), selection.right() + 1 - size.width(), maxX);
+        const int y = qBound(space.top(), selection.bottom() + 1 - kGap - size.height(), maxY);
+        return QRect(QPoint(x, y), size);
+    };
+
+    // Prefer a full-width strip underneath or above, then try wrapping beside the selection.
+    for (int gap : {kGap, 0}) {
+        QRect below = bounds;
+        below.setTop(qMax(bounds.top(), selection.bottom() + 1 + gap));
+        QRect above = bounds;
+        above.setBottom(qMin(bounds.bottom(), selection.top() - 1 - gap));
+        QRect right = bounds;
+        right.setLeft(qMax(bounds.left(), selection.right() + 1 + gap));
+        QRect left = bounds;
+        left.setRight(qMin(bounds.right(), selection.left() - 1 - gap));
+
+        for (const QRect &space : {below, above, right, left}) {
+            if (space.isEmpty())
+                continue;
+            const QSize size = toolbar.sizeForWidth(space.width());
+            if (size.width() <= space.width() && size.height() <= space.height())
+                return positionIn(space, size);
+        }
+    }
+    return positionIn(bounds, toolbar.sizeForWidth(bounds.width()));
+}
+
 } // namespace
 
 SelectionOverlay::SelectionOverlay(QScreen *screen, const QPixmap &shot, const QList<WindowNode> &windows)
     : QWidget(nullptr, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool)
     , m_screen(screen)
     , m_showMagnifier(Config::showMagnifier())
-    , m_confirmAction(Config::confirmAction() == Config::ConfirmAction::Save  ? CaptureAction::Save
-                      : Config::confirmAction() == Config::ConfirmAction::Pin ? CaptureAction::Pin
-                                                                              : CaptureAction::Copy)
+    , m_confirmAction(configuredConfirmAction())
     , m_dpr(screen->devicePixelRatio())
     , m_shot(shot)
     , m_image(shot.toImage())
@@ -87,7 +125,7 @@ void SelectionOverlay::buildToolbar()
             m_textStyle = currentStyle();
             applyTextStyle();
         }
-        if (m_selectedAnnotation >= 0) {
+        if (m_selectedAnnotation >= 0 && m_annotations.at(m_selectedAnnotation)->spotlightRect().isEmpty()) {
             m_annotations.beginEdit();
             m_annotations.setItem(m_selectedAnnotation,
                                   m_annotations.at(m_selectedAnnotation)->restyled(currentStyle()));
@@ -153,6 +191,24 @@ CaptureAction SelectionOverlay::confirmAction() const
     return m_autoAction.value_or(m_confirmAction);
 }
 
+CaptureAction SelectionOverlay::configuredConfirmAction()
+{
+    switch (Config::confirmAction()) {
+    case Config::ConfirmAction::Save:
+        return CaptureAction::Save;
+    case Config::ConfirmAction::Pin:
+        return CaptureAction::Pin;
+    case Config::ConfirmAction::Copy:
+        return CaptureAction::Copy;
+    }
+    return CaptureAction::Copy;
+}
+
+ScreenshotArea SelectionOverlay::captureArea() const
+{
+    return {currentRegion(), m_lasso};
+}
+
 QPoint SelectionOverlay::toPhysical(const QPointF &logical) const
 {
     const QRect bounds = m_image.rect();
@@ -203,6 +259,45 @@ int SelectionOverlay::edgesAt(const QPointF &pos) const
     return edges;
 }
 
+int SelectionOverlay::spotlightHandleAt(const QPointF &pos) const
+{
+    if (m_selectedAnnotation < 0)
+        return None;
+    const QRectF focus = m_annotations.at(m_selectedAnnotation)->spotlightRect();
+    if (focus.isEmpty())
+        return None;
+
+    const auto points = handleCenters(toLogical(focus.toRect()));
+    constexpr int edges[] = {Left | Top, Top, Right | Top, Right, Right | Bottom, Bottom, Left | Bottom, Left};
+    constexpr qreal tolerance = kHandleSize / 2 + 2;
+    for (size_t i = 0; i < points.size(); ++i) {
+        const QPointF delta = pos - points[i];
+        if (qAbs(delta.x()) <= tolerance && qAbs(delta.y()) <= tolerance)
+            return edges[i];
+    }
+    return None;
+}
+
+Qt::CursorShape SelectionOverlay::resizeCursor(int edges)
+{
+    switch (edges) {
+    case Left | Top:
+    case Right | Bottom:
+        return Qt::SizeFDiagCursor;
+    case Right | Top:
+    case Left | Bottom:
+        return Qt::SizeBDiagCursor;
+    case Left:
+    case Right:
+        return Qt::SizeHorCursor;
+    case Top:
+    case Bottom:
+        return Qt::SizeVerCursor;
+    default:
+        return Qt::SizeAllCursor;
+    }
+}
+
 void SelectionOverlay::moveSelectionTo(QRect rect)
 {
     const QRect bounds = m_image.rect();
@@ -247,6 +342,10 @@ void SelectionOverlay::updateCursor(const QPointF &pos)
         setCursor(m_selection.contains(physical) ? Qt::PointingHandCursor : Qt::ArrowCursor);
         return;
     }
+    if (const int edges = spotlightHandleAt(pos); edges != None) {
+        setCursor(resizeCursor(edges));
+        return;
+    }
     if (m_selection.contains(physical) && m_annotations.itemAt(QPointF(physical), hitTolerance()) >= 0) {
         setCursor(Qt::SizeAllCursor); // an existing mark: drag to move it
         return;
@@ -265,26 +364,8 @@ void SelectionOverlay::updateCursor(const QPointF &pos)
         return;
     }
 
-    switch (edgesAt(pos)) {
-    case Left | Top:
-    case Right | Bottom:
-        setCursor(Qt::SizeFDiagCursor);
-        break;
-    case Right | Top:
-    case Left | Bottom:
-        setCursor(Qt::SizeBDiagCursor);
-        break;
-    case Left:
-    case Right:
-        setCursor(Qt::SizeHorCursor);
-        break;
-    case Top:
-    case Bottom:
-        setCursor(Qt::SizeVerCursor);
-        break;
-    default:
-        setCursor(m_selection.contains(toPhysical(pos)) ? Qt::SizeAllCursor : Qt::CrossCursor);
-    }
+    const int edges = edgesAt(pos);
+    setCursor(edges != None || m_selection.contains(physical) ? resizeCursor(edges) : Qt::CrossCursor);
 }
 
 void SelectionOverlay::updateToolbar()
@@ -293,21 +374,12 @@ void SelectionOverlay::updateToolbar()
         m_toolbar->hide();
         return;
     }
-    m_toolbar->adjustSize();
-    const QRectF r = toLogical(m_selection);
-    const QSize size = m_toolbar->size();
-    constexpr int kGap = 6;
-
-    // Prefer below the selection, then above, then inside its bottom edge.
-    int y = qRound(r.bottom()) + kGap;
-    if (y + size.height() > height())
-        y = qRound(r.top()) - kGap - size.height();
-    if (y < 0)
-        y = qRound(r.bottom()) - kGap - size.height();
-    // Right-aligned with the selection; a toolbar wider than the screen pins to the left edge.
-    const int x = qMax(0, qMin(qRound(r.right()) - size.width(), width() - size.width()));
-
-    m_toolbar->move(x, y);
+    // The work area and the toolbar both use logical pixels on this overlay's screen.
+    const QRect workArea = m_screen->availableGeometry();
+    const QRect localWorkArea(mapFromGlobal(workArea.topLeft()), workArea.size());
+    const QRect bounds = rect().intersected(localWorkArea);
+    m_toolbar->setGeometry(toolbarGeometry(*m_toolbar, bounds.isEmpty() ? rect() : bounds,
+                                           toLogical(m_selection).toAlignedRect()));
     m_toolbar->show();
     m_toolbar->raise();
 }
@@ -315,7 +387,8 @@ void SelectionOverlay::updateToolbar()
 void SelectionOverlay::trigger(CaptureAction action)
 {
     commitText();
-    const QRect region = currentRegion();
+    const ScreenshotArea area = captureArea();
+    const QRect &region = area.bounds;
     if (region.isEmpty())
         return;
     if (m_fixedRegion && action != CaptureAction::Pin)
@@ -326,23 +399,9 @@ void SelectionOverlay::trigger(CaptureAction action)
         return;
     }
 
-    QImage composed;
-    if (m_lasso.isEmpty()) {
-        composed = m_image.copy(region);
-        QPainter p(&composed);
-        p.translate(-region.topLeft());
-        m_annotations.paint(p);
-    } else { // freeform: transparent outside the shape
-        composed = QImage(region.size(), QImage::Format_ARGB32_Premultiplied);
-        composed.fill(Qt::transparent);
-        QPainter p(&composed);
-        p.setRenderHint(QPainter::Antialiasing);
-        p.translate(-region.topLeft());
-        p.setClipPath(m_lasso);
-        p.drawImage(region.topLeft(), m_image, region);
-        m_annotations.paint(p);
-    }
-    QPixmap image = QPixmap::fromImage(composed);
+    QPixmap image = QPixmap::fromImage(area.render(m_image, &m_annotations));
+    if (image.isNull())
+        return;
     image.setDevicePixelRatio(m_dpr);
     const QPoint globalTopLeft = m_screen->geometry().topLeft() + (QPointF(region.topLeft()) / m_dpr).toPoint();
     emit actionTriggered(action, image, globalTopLeft);
@@ -401,6 +460,9 @@ void SelectionOverlay::updateDraft(Qt::KeyboardModifiers modifiers)
     case Tool::Blur:
         m_draft = makeMosaic(QRect(m_pressPos, to).normalized() & m_selection, m_image, style, tool == Tool::Blur);
         break;
+    case Tool::Spotlight:
+        m_draft = makeSpotlight(QRectF(m_pressPos, to).normalized().intersected(QRectF(m_selection)));
+        break;
     default:
         m_draft.reset();
     }
@@ -421,6 +483,37 @@ void SelectionOverlay::finishDraft()
     m_state = State::Selected;
     refreshUndoState();
     update();
+}
+
+void SelectionOverlay::updateAnnotationDrag()
+{
+    const QPointF delta(m_cursor - m_pressPos);
+    const QRectF original = m_movingOriginal->spotlightRect();
+    if (original.isEmpty()) {
+        m_annotations.setItem(m_selectedAnnotation, m_movingOriginal->moved(delta));
+        return;
+    }
+
+    const QRectF selection(m_selection);
+    QRectF focus = original;
+    if (m_resizeEdges == None) {
+        const auto clampOffset = [](qreal offset, qreal first, qreal last) {
+            return qBound(qMin(first, last), offset, qMax(first, last));
+        };
+        focus.translate(clampOffset(delta.x(), selection.left() - focus.left(), selection.right() - focus.right()),
+                        clampOffset(delta.y(), selection.top() - focus.top(), selection.bottom() - focus.bottom()));
+    } else {
+        if (m_resizeEdges & Left)
+            focus.setLeft(focus.left() + delta.x());
+        if (m_resizeEdges & Right)
+            focus.setRight(focus.right() + delta.x());
+        if (m_resizeEdges & Top)
+            focus.setTop(focus.top() + delta.y());
+        if (m_resizeEdges & Bottom)
+            focus.setBottom(focus.bottom() + delta.y());
+        focus = focus.normalized().intersected(selection);
+    }
+    m_annotations.setItem(m_selectedAnnotation, focus == original ? m_movingOriginal : makeSpotlight(focus));
 }
 
 void SelectionOverlay::eraseAlong(const QPoint &from, const QPoint &to)
@@ -520,8 +613,9 @@ qreal SelectionOverlay::hitTolerance() const
 void SelectionOverlay::selectAnnotation(int index)
 {
     m_selectedAnnotation = index;
-    m_toolbar->setOptionsVisible(index >= 0);
-    if (index >= 0) {
+    const bool hasStyle = index >= 0 && m_annotations.at(index)->spotlightRect().isEmpty();
+    m_toolbar->setSelectedAnnotationHasStyle(index >= 0 ? std::optional<bool>(hasStyle) : std::nullopt);
+    if (hasStyle) {
         // The style row shows the mark's style, so currentStyle() reproduces it on edits.
         const AnnotationStyle style = m_annotations.at(index)->style();
         int level = 0;
@@ -644,15 +738,23 @@ void SelectionOverlay::paintEvent(QPaintEvent *)
             else
                 p.setClipRect(r);
             p.scale(1.0 / m_dpr, 1.0 / m_dpr); // annotations live in physical pixels
-            m_annotations.paint(p, m_draft);
+            m_annotations.paint(p, region, m_draft);
             p.restore();
         }
         if (m_selectedAnnotation >= 0) {
-            const QRectF box = m_annotations.at(m_selectedAnnotation)->bounds();
-            const QRectF logical(box.x() / m_dpr, box.y() / m_dpr, box.width() / m_dpr, box.height() / m_dpr);
+            const auto &selected = m_annotations.at(m_selectedAnnotation);
+            const QRectF focus = selected->spotlightRect();
             p.setPen(QPen(kAccent, 1, Qt::DashLine));
             p.setBrush(Qt::NoBrush);
-            p.drawRect(logical.adjusted(-3, -3, 3, 3));
+            if (focus.isEmpty()) {
+                const QRectF box = selected->bounds();
+                const QRectF logical(box.x() / m_dpr, box.y() / m_dpr, box.width() / m_dpr, box.height() / m_dpr);
+                p.drawRect(logical.adjusted(-3, -3, 3, 3));
+            } else {
+                const QRectF logical = toLogical(focus.toRect());
+                p.drawRect(logical);
+                drawHandles(p, logical);
+            }
         }
 
         p.setPen(QPen(kAccent, 2));
@@ -718,13 +820,9 @@ void SelectionOverlay::drawBanner(QPainter &p, const QString &text) const
 
 void SelectionOverlay::drawHandles(QPainter &p, const QRectF &r) const
 {
-    const QPointF points[] = {
-        r.topLeft(), {r.center().x(), r.top()}, r.topRight(), {r.right(), r.center().y()},
-        r.bottomRight(), {r.center().x(), r.bottom()}, r.bottomLeft(), {r.left(), r.center().y()},
-    };
     p.setPen(QPen(kAccent, 1));
     p.setBrush(Qt::white);
-    for (const QPointF &pt : points)
+    for (const QPointF &pt : handleCenters(r))
         p.drawRect(QRectF(pt.x() - kHandleSize / 2, pt.y() - kHandleSize / 2, kHandleSize, kHandleSize));
 }
 
@@ -854,11 +952,13 @@ void SelectionOverlay::mousePressEvent(QMouseEvent *event)
     }
 
     // An existing mark under the cursor is selected and dragged, whatever tool is active.
-    if (m_state == State::Selected && m_selection.contains(pos)) {
-        const int hit = m_annotations.itemAt(QPointF(pos), hitTolerance());
+    const int annotationEdges = m_state == State::Selected ? spotlightHandleAt(event->position()) : None;
+    if (m_state == State::Selected && (annotationEdges != None || m_selection.contains(pos))) {
+        const int hit = annotationEdges != None ? m_selectedAnnotation : m_annotations.itemAt(QPointF(pos), hitTolerance());
         if (hit >= 0) {
             selectAnnotation(hit);
             m_pressPos = pos;
+            m_resizeEdges = annotationEdges;
             m_movingOriginal = m_annotations.at(hit);
             m_annotations.beginEdit();
             m_state = State::MovingAnnotation;
@@ -962,7 +1062,7 @@ void SelectionOverlay::mouseMoveEvent(QMouseEvent *event)
         break;
     }
     case State::MovingAnnotation:
-        m_annotations.setItem(m_selectedAnnotation, m_movingOriginal->moved(QPointF(m_cursor - m_pressPos)));
+        updateAnnotationDrag();
         break;
     case State::Lassoing:
         if (m_lassoPoints.last() != QPointF(m_cursor))

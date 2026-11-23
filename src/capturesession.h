@@ -26,7 +26,8 @@ public:
     void start();
 
 signals:
-    void imageAction(CaptureAction action, const QPixmap &image, const QPoint &globalTopLeft);
+    void imageAction(CaptureAction action, const QPixmap &image, const QPoint &globalTopLeft,
+                     QScreen *screen, const ScreenshotArea &area);
     void regionRequested(CaptureAction action, QScreen *screen, const QRect &physicalRegion);
     void finished();
 

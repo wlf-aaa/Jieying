@@ -26,13 +26,17 @@ qt_add_library(jieying_core STATIC
     src/capturehistory.cpp src/capturehistory.h
     src/capturesession.cpp src/capturesession.h
     src/capturetoolbar.cpp src/capturetoolbar.h
+    src/collagedialog.cpp src/collagedialog.h
     src/config.cpp src/config.h
     src/frameencoder.h src/gifencoder.cpp src/mp4encoder.cpp
     src/globalhotkeys.cpp src/globalhotkeys.h
+    src/historydialog.cpp src/historydialog.h
     src/icons.h
     src/hotkeymanager.cpp src/hotkeymanager.h
+    src/imagecollage.cpp src/imagecollage.h
     src/imageio.cpp src/imageio.h
     src/inputoverlay.cpp src/inputoverlay.h
+    src/livepindialog.cpp src/livepindialog.h
     src/ocr.cpp src/ocr.h
     src/ocrwindow.cpp src/ocrwindow.h
     src/pinboard.cpp src/pinboard.h
@@ -47,6 +51,8 @@ qt_add_library(jieying_core STATIC
     src/selfcheck.cpp src/selfcheck.h
     src/sensitive.cpp src/sensitive.h
     src/settingsdialog.cpp src/settingsdialog.h
+    src/tableocr.cpp src/tableocr.h
+    src/tableocrdialog.cpp src/tableocrdialog.h
     src/translator.cpp src/translator.h
     src/windowfinder.cpp src/windowfinder.h
 )
@@ -119,7 +125,7 @@ if(JIEYING_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     # Runs on Qt's offscreen platform: never touches the real desktop, mouse or keyboard.
     # ocr_eval measures OCR accuracy on demand; run_tests.bat does not run it.
-    foreach(_test overlay_test ocr_test m4_test settings_test ocr_eval)
+    foreach(_test overlay_test ocr_test m4_test settings_test historydialog_test collage_test tableocr_test livepin_test ocr_eval)
         qt_add_executable(${_test} tests/${_test}.cpp)
         target_link_libraries(${_test} PRIVATE jieying_core Qt6::Test)
         target_compile_options(${_test} PRIVATE ${JIEYING_WARNINGS})

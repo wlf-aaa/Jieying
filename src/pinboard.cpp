@@ -1,8 +1,8 @@
 #include "pinboard.h"
 
-#include "pinwindow.h"
-
+#include <QGuiApplication>
 #include <QMenu>
+#include <QScreen>
 
 #include <algorithm>
 
@@ -11,17 +11,22 @@ PinBoard::PinBoard(QObject *parent)
 {
 }
 
-void PinBoard::prune()
+void PinBoard::registerPin(PinWindow *pin)
 {
     m_pins.removeAll(nullptr);
+    m_pins.append(pin);
+    connect(pin, &PinWindow::menuAboutToShow, this, [this, pin](QMenu *menu) { addMoveMenu(pin, menu); });
+    connect(pin, &PinWindow::closing, this, [this, pin] {
+        // QWidget deletes the closed window later. Stop tracking it before a group can show it again.
+        if (m_pins.removeAll(pin) && !pin->image().isNull())
+            m_lastClosed = pin->snapshot();
+    });
 }
 
 void PinBoard::add(PinWindow *pin)
 {
-    prune();
     pin->setGroup(m_current);
-    connect(pin, &PinWindow::menuAboutToShow, this, [this, pin](QMenu *menu) { addMoveMenu(pin, menu); });
-    m_pins.append(pin);
+    registerPin(pin);
     pin->show();
 }
 
@@ -96,6 +101,30 @@ void PinBoard::closeAll()
         pin->close();
     m_pins.clear();
     m_current = 1;
+}
+
+PinWindow *PinBoard::restoreLastClosed()
+{
+    if (!m_lastClosed)
+        return nullptr;
+
+    auto *pin = new PinWindow(*m_lastClosed);
+    m_lastClosed.reset();
+
+    const QRect content = pin->contentGeometry();
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    const bool onScreen = std::any_of(screens.cbegin(), screens.cend(), [content](const QScreen *screen) {
+        return screen->availableGeometry().intersects(content);
+    });
+    if (QScreen *primary = QGuiApplication::primaryScreen(); primary && !onScreen)
+        pin->move(pin->pos() + primary->availableGeometry().center() - content.center());
+
+    registerPin(pin);
+    if (pin->group() == m_current)
+        pin->show();
+    else
+        showGroup(pin->group());
+    return pin;
 }
 
 bool PinBoard::anyClickThrough() const

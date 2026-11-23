@@ -10,6 +10,7 @@
 #include "globalhotkeys.h"
 #include "hotkeymanager.h"
 #include "imageio.h"
+#include "pinwindow.h"
 #include "selectionoverlay.h"
 #include "settingsdialog.h"
 #include "translator.h"
@@ -20,16 +21,23 @@
 #include <QTcpSocket>
 #include <QUrlQuery>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QComboBox>
+#include <QCursor>
 #include <QDirIterator>
 #include <QDir>
+#include <QMenu>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QScreen>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
+#include <QToolButton>
 #include <QTranslator>
+#include <QWheelEvent>
 
 #include <cstdio>
 
@@ -108,6 +116,8 @@ void testDefaultsAndNaming()
     check(Config::hotkey(Config::Hotkey::TogglePins) == QKeySequence(QStringLiteral("Shift+F3"))
               && Config::currentHotkeyScheme() == Config::HotkeyScheme::Default,
           "defaults: Shift+F3 hides/shows pins; the default scheme is detected");
+    check(!Config::pauseHotkeysInFullscreen(), "defaults: fullscreen hotkey pause is opt-in");
+    check(Config::hotkey(Config::Hotkey::RepeatCapture).isEmpty(), "defaults: repeat capture hotkey is opt-in");
     check(Config::askWhereToSave() && Config::imageFormat() == "png" && Config::jpgQuality() == 90
               && Config::ocrEngine() == Config::OcrEngine::Auto && Config::gifFps() == 15 && Config::mp4Fps() == 30,
           "defaults: ask where to save, PNG, JPG 90, OCR auto, GIF 15 / MP4 30 fps");
@@ -224,11 +234,160 @@ void testHotkeys()
     check(manager.isRegistered(Config::Hotkey::Capture) && manager.isRegistered(Config::Hotkey::RecordMp4),
           "hotkeys: resuming registers everything again");
 
+    manager.setPausedForFullscreen(true);
+    {
+        GlobalHotkeys otherProgram;
+        check(!manager.isRegistered(Config::Hotkey::Capture) && otherProgram.add(999, kKeyA),
+              "hotkeys: fullscreen releases the system-wide shortcut");
+    }
+    manager.setSuspended(true);
+    manager.setSuspended(false);
+    check(!manager.isRegistered(Config::Hotkey::Capture), "hotkeys: ending key editing respects fullscreen pause");
+    manager.setSuspended(true);
+    manager.setPausedForFullscreen(false);
+    check(!manager.isRegistered(Config::Hotkey::Capture), "hotkeys: leaving fullscreen respects key editing");
+    manager.setSuspended(false);
+    check(manager.isRegistered(Config::Hotkey::Capture) && manager.isRegistered(Config::Hotkey::PinClipboard),
+          "hotkeys: leaving both pause states restores shortcuts");
+
     QSignalSpy changed(&manager, &HotkeyManager::changed);
     error = manager.change(Config::Hotkey::LongShot, QKeySequence());
     check(error.isEmpty() && !manager.isRegistered(Config::Hotkey::LongShot) && Config::hotkey(Config::Hotkey::LongShot).isEmpty()
               && changed.size() == 1,
           "hotkeys: clearing unregisters and notifies");
+}
+
+void testPinWheel()
+{
+    QPixmap image(100, 60);
+    image.fill(Qt::red);
+    auto *pin = new PinWindow(image, {50, 50});
+    pin->show();
+    const auto wheel = [pin](Qt::KeyboardModifiers modifiers) {
+        const QPoint local = pin->rect().center();
+        QWheelEvent event(local, pin->mapToGlobal(local), {}, {0, 120}, Qt::NoButton, modifiers, Qt::NoScrollPhase,
+                          false);
+        QApplication::sendEvent(pin, &event);
+    };
+
+    const QSize originalSize = pin->size();
+    wheel(Qt::NoModifier);
+    check(pin->width() > originalSize.width(), "pin wheel: default wheel zooms");
+    QTest::keyClick(pin, Qt::Key_Minus, Qt::ControlModifier);
+    check(qAbs(pin->windowOpacity() - 0.9) < 0.01, "pin wheel: original opacity shortcut remains available");
+    wheel(Qt::ControlModifier);
+    check(qAbs(pin->windowOpacity() - 1.0) < 0.01, "pin wheel: default Ctrl+wheel changes opacity");
+
+    Config::setPinWheelAction(false, Config::PinWheelAction::Opacity);
+    Config::setPinWheelAction(true, Config::PinWheelAction::Zoom);
+    const QRect before = pin->geometry();
+    QTest::keyClick(pin, Qt::Key_Minus, Qt::ControlModifier);
+    wheel(Qt::NoModifier);
+    check(pin->geometry() == before && qAbs(pin->windowOpacity() - 1.0) < 0.01,
+          "pin wheel: switching to opacity changes existing pins without resizing");
+    wheel(Qt::ControlModifier);
+    check(pin->width() > before.width(), "pin wheel: Ctrl+wheel can be configured to zoom");
+    Config::setPinWheelAction(false, Config::PinWheelAction::Disabled);
+    QTest::keyClick(pin, Qt::Key_Minus, Qt::ControlModifier);
+    const qreal opacity = pin->windowOpacity();
+    const QRect disabledGeometry = pin->geometry();
+    wheel(Qt::NoModifier);
+    check(pin->geometry() == disabledGeometry && pin->windowOpacity() == opacity,
+          "pin wheel: disabling an input leaves the pin as it was");
+    Config::setPinWheelAction(false, Config::PinWheelAction::Zoom);
+    Config::setPinWheelAction(true, Config::PinWheelAction::Opacity);
+    pin->close();
+}
+
+void testPinQuickControls(const QDir &out)
+{
+    QPixmap image(220, 140);
+    image.fill(QColor(38, 92, 148));
+    auto *pin = new PinWindow(image, {160, 150});
+    pin->show();
+    check(QTest::qWaitForWindowExposed(pin), "pin controls: pin opens");
+
+    QWidget *bar = pin->findChild<QWidget *>(QStringLiteral("pinQuickBar"));
+    check(!bar || !bar->isVisible(), "pin controls: stays hidden until requested by pointer proximity");
+    const QPoint local(35, 12);
+    const QPoint pointer = pin->mapToGlobal(local);
+    const auto approachEdge = [pin, local, pointer] {
+        QCursor::setPos(pointer);
+        QMouseEvent move(QEvent::MouseMove, local, pointer, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(pin, &move);
+    };
+    approachEdge();
+    const bool shown = QTest::qWaitFor([&] {
+        bar = pin->findChild<QWidget *>(QStringLiteral("pinQuickBar"));
+        return bar && bar->isVisible();
+    }, 750);
+    check(shown, "pin controls: approaching the upper edge reveals the bar");
+    if (!shown) {
+        pin->close();
+        return;
+    }
+
+    auto *copy = bar->findChild<QToolButton *>(QStringLiteral("pinQuickCopy"));
+    auto *lock = bar->findChild<QToolButton *>(QStringLiteral("pinQuickLock"));
+    auto *opacity = bar->findChild<QToolButton *>(QStringLiteral("pinQuickOpacity"));
+    auto *more = bar->findChild<QToolButton *>(QStringLiteral("pinQuickMore"));
+    check(copy && lock && opacity && more, "pin controls: copy, lock, opacity and More are available");
+    if (!copy || !lock || !opacity || !more) {
+        pin->close();
+        return;
+    }
+
+    const QRect pinGeometry = pin->geometry();
+    const QRect barGeometry(bar->mapToGlobal(QPoint()), bar->size());
+    check(barGeometry.bottom() < pinGeometry.top() + 10,
+          "pin controls: the bar leaves the image unobstructed when there is room");
+    QApplication::clipboard()->clear();
+    copy->click();
+    check(QApplication::clipboard()->image() == image.toImage(), "pin controls: Copy uses the original image");
+
+    lock->click();
+    check(lock->isCheckable() && lock->isChecked(), "pin controls: Lock displays its active state");
+    QAction *opacityPreset = nullptr;
+    if (opacity->menu()) {
+        for (QAction *action : opacity->menu()->actions()) {
+            if (action->text().contains(QStringLiteral("80%")))
+                opacityPreset = action;
+        }
+    }
+    if (opacityPreset)
+        opacityPreset->trigger();
+    check(opacityPreset && qAbs(pin->windowOpacity() - 0.8) < 0.01 && opacity->text().contains(QStringLiteral("80%")),
+          "pin controls: opacity presets update the pin and the displayed percentage");
+
+    bool hasCheckedLock = false;
+    QObject::connect(pin, &PinWindow::menuAboutToShow, pin, [&](QMenu *menu) {
+        for (QAction *action : menu->actions()) {
+            if (action->text() == QStringLiteral("锁定位置"))
+                hasCheckedLock = action->isChecked();
+        }
+        QTimer::singleShot(0, menu, &QWidget::close);
+    });
+    more->click();
+    check(hasCheckedLock, "pin controls: More uses the normal context menu and its current lock state");
+    check(pin->geometry() == pinGeometry, "pin controls: the controls do not move or resize the picture");
+    const QPixmap barPreview = bar->grab();
+    const QPoint surfaceSample(qRound(3 * barPreview.devicePixelRatio()), barPreview.height() / 2);
+    check(!barPreview.isNull() && barPreview.toImage().pixelColor(surfaceSample).alpha() > 235,
+          "pin controls: an opaque surface keeps the controls readable over the desktop");
+    barPreview.save(out.filePath(QStringLiteral("pin_quick_controls.png")));
+
+    QCursor::setPos(QPoint(24, 320));
+    QEvent leavePin(QEvent::Leave);
+    QEvent leaveBar(QEvent::Leave);
+    QApplication::sendEvent(pin, &leavePin);
+    QApplication::sendEvent(bar, &leaveBar);
+    check(QTest::qWaitFor([bar] { return !bar->isVisible(); }, 750),
+          "pin controls: leaving the pin and toolbar hides the controls");
+    approachEdge();
+    check(QTest::qWaitFor([bar] { return bar->isVisible(); }, 750), "pin controls: approaching again reopens the bar");
+    pin->setClickThrough(true);
+    check(!bar->isVisible(), "pin controls: hides immediately when click-through is enabled");
+    pin->close();
 }
 
 void testDialog(const QDir &out)
@@ -257,6 +416,26 @@ void testDialog(const QDir &out)
     if (autostart)
         autostart->click();
     check(autostart && !Autostart::isEnabled(), "dialog: unticking disables it again");
+
+    auto *wheel = dialog.findChild<QComboBox *>(QStringLiteral("pinWheelAction"));
+    auto *ctrlWheel = dialog.findChild<QComboBox *>(QStringLiteral("pinCtrlWheelAction"));
+    if (wheel && ctrlWheel) {
+        wheel->setCurrentIndex(int(Config::PinWheelAction::Opacity));
+        ctrlWheel->setCurrentIndex(int(Config::PinWheelAction::Disabled));
+    }
+    check(wheel && ctrlWheel && Config::pinWheelAction(false) == Config::PinWheelAction::Opacity
+              && Config::pinWheelAction(true) == Config::PinWheelAction::Disabled,
+          "dialog: normal and Ctrl+wheel settings save independently");
+    Config::setPinWheelAction(false, Config::PinWheelAction::Zoom);
+    Config::setPinWheelAction(true, Config::PinWheelAction::Opacity);
+
+    auto *fullscreen = dialog.findChild<QCheckBox *>(QStringLiteral("pauseHotkeysInFullscreen"));
+    QSignalSpy pauseChanged(&dialog, &SettingsDialog::fullscreenHotkeyPauseEnabled);
+    if (fullscreen)
+        fullscreen->click();
+    check(fullscreen && Config::pauseHotkeysInFullscreen() && pauseChanged.size() == 1,
+          "dialog: fullscreen pause saves immediately and notifies the controller");
+    Config::setPauseHotkeysInFullscreen(false);
 
     Config::setShowMagnifier(true);
     QCheckBox *box = nullptr;
@@ -311,6 +490,46 @@ void testOverlay()
               "overlay: Enter runs the configured confirm action");
         Config::setConfirmAction(Config::ConfirmAction::Copy);
     }
+}
+
+void testRepeatCaptureArea()
+{
+    QScreen *screen = QGuiApplication::primaryScreen();
+    QPixmap shot(screen->geometry().size() * screen->devicePixelRatio());
+    shot.fill(Qt::red);
+    SelectionOverlay overlay(screen, shot, {});
+    overlay.show();
+    check(QTest::qWaitForWindowExposed(&overlay), "repeat capture: overlay opens");
+
+    const QRect region(33, 45, 16, 12);
+    overlay.preselect(region);
+    const ScreenshotArea area = overlay.captureArea();
+    check(area.bounds == region && area.mask.isEmpty(), "repeat capture: records exact screen-local physical bounds");
+
+    QImage fresh(90, 80, QImage::Format_RGB32);
+    fresh.fill(Qt::black);
+    QPainter(&fresh).fillRect(region, Qt::green);
+    const QImage repeated = area.render(fresh);
+    check(repeated.size() == region.size() && repeated.pixelColor(0, 0) == Qt::green
+              && repeated.pixelColor(repeated.width() - 1, repeated.height() - 1) == Qt::green,
+          "repeat capture: matches the saved area on fresh screen pixels");
+    check(area.render(fresh.copy(QRect(0, 0, 40, 40))).isNull(),
+          "repeat capture: refuses a region that no longer fits the screen");
+
+    overlay.hide();
+    SelectionOverlay freeform(screen, shot, {});
+    freeform.show();
+    freeform.setFreeform(true);
+    QTest::mousePress(&freeform, Qt::LeftButton, {}, {20, 20});
+    QTest::mouseMove(&freeform, {50, 20});
+    QTest::mouseMove(&freeform, {35, 50});
+    QTest::mouseRelease(&freeform, Qt::LeftButton, {}, {20, 20});
+    const ScreenshotArea shaped = freeform.captureArea();
+    fresh.fill(Qt::blue);
+    const QImage masked = shaped.render(fresh);
+    check(!shaped.mask.isEmpty() && !masked.isNull() && masked.pixelColor(masked.rect().center()) == Qt::blue
+              && masked.pixelColor(0, masked.height() - 1).alpha() == 0,
+          "repeat capture: preserves the freeform shape over fresh pixels");
 }
 
 void testHistory()
@@ -520,8 +739,11 @@ int main(int argc, char *argv[])
     testAutostart();
     testDirectSave();
     testHotkeys();
+    testPinWheel();
+    testPinQuickControls(out);
     testDialog(out);
     testOverlay();
+    testRepeatCaptureArea();
     testIcons(out);
     testTranslation();
     testHistory();

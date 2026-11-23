@@ -28,6 +28,9 @@ public:
     void applyHotkeyScheme(Config::HotkeyScheme scheme);
     QString schemeShown() const;
 
+signals:
+    void fullscreenHotkeyPauseEnabled(bool enabled);
+
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 

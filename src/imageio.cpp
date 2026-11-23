@@ -53,11 +53,17 @@ QString directPath(QWidget *parent, const QString &suffix)
     return uniquePath(folder, suffix);
 }
 
-bool writeImage(const QPixmap &image, const QString &path)
+QString writeImage(const QPixmap &image, const QString &path, QWidget *parent)
 {
+    if (path.isEmpty())
+        return {};
     const QString suffix = QFileInfo(path).suffix().toLower();
     const bool lossy = suffix == QLatin1String("jpg") || suffix == QLatin1String("jpeg") || suffix == QLatin1String("webp");
-    return image.save(path, nullptr, lossy ? Config::jpgQuality() : -1);
+    if (!image.save(path, nullptr, lossy ? Config::jpgQuality() : -1)) {
+        warnWriteFailed(parent, path);
+        return {};
+    }
+    return path;
 }
 
 } // namespace
@@ -160,24 +166,19 @@ QString uniquePath(const QString &folder, const QString &suffix)
 
 QString saveImage(const QPixmap &image, QWidget *parent, bool quick)
 {
+    if (Config::askWhereToSave() && !quick)
+        return saveImageAs(image, parent);
+    return writeImage(image, directPath(parent, Config::imageFormat()), parent);
+}
+
+QString saveImageAs(const QPixmap &image, QWidget *parent)
+{
     const QString format = Config::imageFormat();
-    QString path;
-    if (Config::askWhereToSave() && !quick) {
-        QStringList filters = {tr("PNG 图片 (*.png)"), tr("JPEG 图片 (*.jpg *.jpeg)"), tr("WebP 图片 (*.webp)")};
-        const int preferred = format == QLatin1String("jpg") ? 1 : format == QLatin1String("webp") ? 2 : 0;
-        filters.move(preferred, 0); // the dialog starts on the first one
-        const QString filter = filters.join(QStringLiteral(";;")) + tr(";;BMP 图片 (*.bmp)");
-        path = askPath(parent, tr("保存截图"), format, filter);
-    } else {
-        path = directPath(parent, format);
-    }
-    if (path.isEmpty())
-        return {};
-    if (!writeImage(image, path)) {
-        warnWriteFailed(parent, path);
-        return {};
-    }
-    return path;
+    QStringList filters = {tr("PNG 图片 (*.png)"), tr("JPEG 图片 (*.jpg *.jpeg)"), tr("WebP 图片 (*.webp)")};
+    const int preferred = format == QLatin1String("jpg") ? 1 : format == QLatin1String("webp") ? 2 : 0;
+    filters.move(preferred, 0); // the dialog starts on the first one
+    const QString filter = filters.join(QStringLiteral(";;")) + tr(";;BMP 图片 (*.bmp)");
+    return writeImage(image, askPath(parent, tr("保存截图"), format, filter), parent);
 }
 
 QString saveRecording(const QString &sourcePath, const QString &suffix, QWidget *parent)

@@ -17,6 +17,9 @@ void copyToClipboard(const QPixmap &image);
 // Returns the saved path, or an empty string if cancelled or failed.
 QString saveImage(const QPixmap &image, QWidget *parent = nullptr, bool quick = false);
 
+// Always asks for an export path, using the configured folder, name and format.
+QString saveImageAs(const QPixmap &image, QWidget *parent = nullptr);
+
 // Same for an already written file (a recording): moves it to the chosen place. Returns the
 // new path, or an empty string if cancelled or failed; the source is left alone then.
 QString saveRecording(const QString &sourcePath, const QString &suffix, QWidget *parent = nullptr);

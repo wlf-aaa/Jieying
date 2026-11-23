@@ -1,10 +1,13 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QPixmap>
+#include <QPointer>
 #include <QTimer>
 #include <QWidget>
 
 class QMenu;
+class QToolButton;
 
 // Borderless always-on-top window showing a pinned image.
 // Drag to move, wheel to zoom, Ctrl+wheel for opacity, double-click, Esc or Delete to close;
@@ -17,7 +20,7 @@ class PinWindow : public QWidget
 
 public:
     // contentTopLeft is where the image's top-left lands, in global logical coordinates.
-    PinWindow(const QPixmap &image, const QPoint &contentTopLeft);
+    PinWindow(const QPixmap &image, const QPoint &contentTopLeft, qreal initialScale = 1.0);
 
     QPixmap image() const { return m_image; }
 
@@ -49,11 +52,17 @@ signals:
     void annotateRequested();
     void beautifyRequested(const QPixmap &image);
     void clickThroughChanged(bool on);
+    void closing();
     void imagesDropped(const QList<QImage> &images, const QPoint &globalPos);
     // The context menu is about to open; receivers may add entries (directly connected).
     void menuAboutToShow(QMenu *menu);
 
 protected:
+    void closeEvent(QCloseEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
+    void moveEvent(QMoveEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
@@ -68,15 +77,43 @@ protected:
     void dropEvent(QDropEvent *event) override;
 
 private:
+    friend class PinBoard;
+
+    struct Snapshot
+    {
+        QPixmap image;
+        QPoint contentTopLeft;
+        int group = 1;
+        qreal scale = 1.0;
+        qreal opacity = 1.0;
+        bool positionLocked = false;
+    };
+
+    explicit PinWindow(const Snapshot &state);
+    Snapshot snapshot() const;
+    QRect contentGeometry() const;
     QSize contentSize() const;
     void setScale(qreal scale, const QPointF &anchorGlobal);
     void setOpacity(qreal opacity);
+    void setPositionLocked(bool locked);
     void showHint(const QString &text);
+    void copy();
     void save();
     void setImageKeepingCenter(const QPixmap &image);
+    void createQuickBar();
+    QRect quickBarTrigger() const;
+    void maybeShowQuickBar(const QPoint &pointer);
+    void placeQuickBar(const QPoint &pointer);
+    void checkQuickBarHover();
+    void hideQuickBar();
+    void syncQuickOpacity();
+    void populateOpacityMenu(QMenu *menu);
+    void trackPinMenu(QMenu *menu);
+    void showPinMenu(const QPoint &globalPos);
 
     QPixmap m_image;
     qreal m_scale = 1.0;
+    bool m_positionLocked = false;
     bool m_dragging = false;
     QPoint m_dragOffset;
     QString m_hint;
@@ -86,4 +123,10 @@ private:
     bool m_cropping = false;
     QPoint m_cropStart;
     QRect m_cropRect; // window-local, normalized; empty until dragged
+    QWidget *m_quickBar = nullptr;
+    QToolButton *m_quickLock = nullptr;
+    QToolButton *m_quickOpacity = nullptr;
+    QPointer<QMenu> m_openMenu;
+    QTimer m_quickHoverTimer;
+    QElapsedTimer m_pointerAway;
 };

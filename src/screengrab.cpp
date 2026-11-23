@@ -1,5 +1,8 @@
 #include "screengrab.h"
 
+#include "annotations.h"
+
+#include <QPainter>
 #include <QWidget>
 
 #include <windows.h>
@@ -28,6 +31,31 @@ void drawCursor(HDC dc, const QRect &rect)
 }
 
 } // namespace
+
+QImage ScreenshotArea::render(const QImage &screen, const AnnotationStack *annotations) const
+{
+    if (bounds.isEmpty() || !screen.rect().contains(bounds))
+        return {};
+
+    QImage image = mask.isEmpty() ? screen.copy(bounds)
+                                  : QImage(bounds.size(), QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull() || (mask.isEmpty() && !annotations))
+        return image;
+    if (!mask.isEmpty())
+        image.fill(Qt::transparent);
+
+    QPainter painter(&image);
+    painter.translate(-bounds.topLeft());
+    if (!mask.isEmpty()) {
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setClipPath(mask);
+        painter.drawImage(bounds.topLeft(), screen, bounds);
+    }
+    if (annotations)
+        annotations->paint(painter, bounds);
+    painter.end();
+    return image;
+}
 
 QImage grabScreenRect(const QRect &rect, bool includeCursor)
 {

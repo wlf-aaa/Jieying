@@ -13,6 +13,7 @@ class OcrPreview;
 class QLabel;
 class QPlainTextEdit;
 class QPushButton;
+class TableOcrDialog;
 class Translator;
 
 // Shows an image next to its recognized text. Recognition runs in the background
@@ -50,6 +51,8 @@ private:
     QPushButton *m_translate;
     QPushButton *m_copyTranslation;
     QPlainTextEdit *m_translation;
+    TableOcrDialog *m_tableDialog = nullptr;
+    bool m_tableCopied = false;
     Translator *m_translator = nullptr;
     QFutureWatcher<OcrResult> m_watcher;
     QFutureWatcher<QList<Barcode>> m_codeWatcher;

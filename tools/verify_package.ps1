@@ -4,10 +4,13 @@
 #      settings all gone
 #   2. portable zip: extract -> self-check -> settings stored in data\ beside the exe
 #   3. portable copy without ONNX Runtime / OCR models -> self-check passes on Windows OCR
-# Usage: powershell -ExecutionPolicy Bypass -File tools\verify_package.ps1
+#   -Lite: extract the lite zip, verify Windows OCR, add the OCR pack, verify PaddleOCR
+# Usage: powershell -ExecutionPolicy Bypass -File tools\verify_package.ps1 [-Lite] [-PackageDir <path>]
+param([switch]$Lite, [string]$PackageDir)
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $root = Split-Path -Parent $PSScriptRoot
-$dist = Join-Path $root 'dist'
+$dist = if ($PackageDir) { (Resolve-Path -LiteralPath $PackageDir).Path } else { Join-Path $root 'dist' }
 $version = [regex]::Match((Get-Content (Join-Path $root 'CMakeLists.txt') -Raw), 'project\(Jieying VERSION ([\d.]+)').Groups[1].Value
 $work = Join-Path $env:TEMP "jieying-verify-$PID"
 New-Item -ItemType Directory -Force $work | Out-Null
@@ -16,13 +19,52 @@ function Check($ok, $what) {
     Write-Host ('{0}  {1}' -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $what)
     if (-not $ok) { $script:failures++ }
 }
-# Runs the self-check with a PATH that cannot reach Qt or the build tree.
+# Keep codec probe files in the verification folder and keep Qt and the build tree off PATH.
 function SelfCheck($exe, $report) {
-    $saved = $env:Path
+    $savedPath = $env:Path
+    $savedTemp = $env:TEMP
+    $savedTmp = $env:TMP
+    $probeDir = Split-Path -Parent $report
     $env:Path = "$env:SystemRoot\system32;$env:SystemRoot"
-    try { $p = Start-Process $exe -ArgumentList '--self-check', "`"$report`"" -Wait -PassThru } finally { $env:Path = $saved }
+    $env:TEMP = $probeDir
+    $env:TMP = $probeDir
+    try {
+        $p = Start-Process $exe -ArgumentList '--self-check', "`"$report`"" -WindowStyle Hidden -Wait -PassThru
+    } finally {
+        $env:Path = $savedPath
+        $env:TEMP = $savedTemp
+        $env:TMP = $savedTmp
+    }
     $text = Get-Content $report -Encoding utf8 -ErrorAction SilentlyContinue
     return @{ Ok = ($p.ExitCode -eq 0); Text = $text }
+}
+
+if ($Lite) {
+    Write-Host '== lite portable zip'
+    $appDir = Join-Path $work 'lite\Jieying'
+    $portableExe = Join-Path $appDir 'jieying.exe'
+    Expand-Archive -LiteralPath (Join-Path $dist "Jieying-$version-lite-portable.zip") -DestinationPath (Join-Path $work 'lite')
+    Check ((-not (Test-Path (Join-Path $appDir 'onnxruntime.dll'))) -and
+           (-not (Test-Path (Join-Path $appDir 'ocr-models')))) 'lite zip excludes the OCR runtime and models'
+    $check = SelfCheck $portableExe (Join-Path $work 'lite-check.txt')
+    $check.Text | Where-Object { $_ -match 'OCR|settings:|^FAIL' } | ForEach-Object { Write-Host "      $_" }
+    Check $check.Ok 'lite copy passes the self-check'
+    Check ($check.Text -match '^PASS  default OCR engine reads the sample.*Windows OCR') 'lite defaults to Windows OCR'
+    Check ($check.Text -like "INFO  settings:*$appDir\data\*.ini") 'portable settings live in data\ beside the exe'
+
+    Write-Host '== optional PaddleOCR pack'
+    $exeHash = (Get-FileHash $portableExe).Hash
+    Expand-Archive -LiteralPath (Join-Path $dist "Jieying-$version-paddleocr.zip") -DestinationPath $appDir -Force
+    Check ((Get-FileHash $portableExe).Hash -eq $exeHash) 'the pack leaves the lite executable intact'
+    $check = SelfCheck $portableExe (Join-Path $work 'lite-upgraded-check.txt')
+    $check.Text | Where-Object { $_ -match 'OCR|^FAIL' } | ForEach-Object { Write-Host "      $_" }
+    Check $check.Ok 'lite copy with the OCR pack passes the self-check'
+    Check ($check.Text -match '^PASS  default OCR engine reads the sample.*PaddleOCR') 'lite defaults to PaddleOCR with the pack installed'
+    $workItem = Get-Item -LiteralPath $work
+    if ($workItem.Parent.FullName -ne (Resolve-Path -LiteralPath $env:TEMP).Path -or
+        ($workItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'unexpected verification folder' }
+    Remove-Item -LiteralPath $workItem.FullName -Recurse -Force
+    exit $failures
 }
 
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{98CAFD72-1599-4CC3-ACD8-C780D7B68A43}_is1'

@@ -4,6 +4,7 @@
 #include <QGuiApplication>
 #include <QPainter>
 #include <QPainterPathStroker>
+#include <QRegion>
 
 namespace {
 
@@ -62,6 +63,31 @@ public:
 private:
     QRectF m_rect;
     AnnotationStyle m_style;
+};
+
+class SpotlightAnnotation : public Annotation
+{
+public:
+    explicit SpotlightAnnotation(const QRectF &rect) : m_rect(rect) {}
+
+    void paint(QPainter &) const override {} // the stack paints one mask for all spotlight areas
+    QPainterPath hitArea(qreal tolerance) const override
+    {
+        QPainterPath outline;
+        outline.addRect(m_rect);
+        return strokeArea(outline, 1, tolerance);
+    }
+    AnnotationPtr moved(const QPointF &delta) const override
+    {
+        return std::make_shared<SpotlightAnnotation>(m_rect.translated(delta));
+    }
+    AnnotationPtr restyled(const AnnotationStyle &) const override { return {}; }
+    QRectF spotlightRect() const override { return m_rect; }
+    QPointF anchor() const override { return m_rect.topLeft(); }
+    AnnotationStyle style() const override { return {}; }
+
+private:
+    QRectF m_rect;
 };
 
 class EllipseAnnotation : public Annotation
@@ -527,6 +553,13 @@ AnnotationPtr makeShape(Tool tool, const QPoint &from, const QPoint &to, const A
     }
 }
 
+AnnotationPtr makeSpotlight(const QRectF &rect)
+{
+    if (rect.isEmpty())
+        return {};
+    return std::make_shared<SpotlightAnnotation>(rect);
+}
+
 AnnotationPtr makeStroke(const QPolygonF &points, const AnnotationStyle &style, bool highlighter)
 {
     QPainterPath path;
@@ -662,8 +695,21 @@ void AnnotationStack::cancelEdit()
     m_editStart.reset();
 }
 
-void AnnotationStack::paint(QPainter &p, const AnnotationPtr &draft) const
+void AnnotationStack::paint(QPainter &p, const QRect &bounds, const AnnotationPtr &draft) const
 {
+    QRegion focus;
+    for (const AnnotationPtr &item : m_items)
+        focus += item->spotlightRect().toRect();
+    if (draft)
+        focus += draft->spotlightRect().toRect();
+    if (!focus.isEmpty()) {
+        p.save();
+        p.setCompositionMode(QPainter::CompositionMode_SourceAtop); // preserve a freeform crop's alpha
+        for (const QRect &dimmed : QRegion(bounds).subtracted(focus))
+            p.fillRect(dimmed, QColor(0, 0, 0, 120));
+        p.restore();
+    }
+
     p.save();
     p.setRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::TextAntialiasing);

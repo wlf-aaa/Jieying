@@ -26,6 +26,10 @@ public:
     // instead of the system routing it to us as a hotkey. change() still validates and saves.
     void setSuspended(bool suspended);
 
+    // The foreground application covers a screen. Keep this pause independent of key editing.
+    void setPausedForFullscreen(bool paused);
+    bool pausedForFullscreen() const { return m_pausedForFullscreen; }
+
     // Replaces every key with a scheme's set in one go (no transient duplicate errors) and
     // registers them; returns the ones another program already holds.
     QList<Config::Hotkey> applyScheme(Config::HotkeyScheme scheme);
@@ -33,11 +37,15 @@ public:
 signals:
     void triggered(Config::Hotkey hotkey);
     void changed();
+    void fullscreenPauseChanged();
 
 private:
     void unregisterAll();
+    bool registrationPaused() const { return m_suspended || m_pausedForFullscreen; }
+    void refreshAfterPauseChange(bool wasPaused);
 
     GlobalHotkeys *m_keys;
     QList<Config::Hotkey> m_registered;
     bool m_suspended = false;
+    bool m_pausedForFullscreen = false;
 };

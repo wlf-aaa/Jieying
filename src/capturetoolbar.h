@@ -6,7 +6,9 @@
 #include <QList>
 #include <QWidget>
 
-class QHBoxLayout;
+#include <optional>
+
+class QLayout;
 class QToolButton;
 
 // QuickSave: straight into the save folder, never asking where.
@@ -20,9 +22,9 @@ inline bool isRegionAction(CaptureAction action)
 }
 
 // Toolbar order.
-inline constexpr Tool kToolOrder[] = {Tool::Rect,   Tool::Ellipse,     Tool::Line, Tool::Arrow,  Tool::Ruler,
-                                      Tool::Pen,    Tool::Highlighter, Tool::Text, Tool::Mosaic, Tool::Blur,
-                                      Tool::Number, Tool::Eraser};
+inline constexpr Tool kToolOrder[] = {Tool::Rect,      Tool::Ellipse,     Tool::Line, Tool::Arrow,  Tool::Ruler,
+                                      Tool::Pen,       Tool::Highlighter, Tool::Text, Tool::Mosaic, Tool::Blur,
+                                      Tool::Spotlight, Tool::Number,      Tool::Eraser};
 // Shift+1..9 selects annotation tools (index 0 is unused).
 inline constexpr Tool kToolByShiftDigit[10] = {Tool::None,   Tool::Rect,        Tool::Line,   Tool::Arrow, Tool::Number,
                                                Tool::Pen,    Tool::Highlighter, Tool::Mosaic, Tool::Text,  Tool::Eraser};
@@ -45,13 +47,14 @@ public:
     int sizeLevel() const { return m_sizeLevel; } // 0 small, 1 medium, 2 large
     bool fill() const { return m_fill; }
     void setUndoState(bool canUndo, bool canRedo);
+    QSize sizeForWidth(int maximumWidth) const;
 
     // Annotating a pinned image: only the drawing tools, undo/redo, cancel and a "done" check
     // (which then requests CaptureAction::Pin, i.e. "put it back on the pin").
     void setPinEditing(bool pinEditing);
 
-    // Keeps the color/size row visible without an active tool (an annotation is selected).
-    void setOptionsVisible(bool visible);
+    // Selected marks override the active tool's style controls until deselected.
+    void setSelectedAnnotationHasStyle(std::optional<bool> hasStyle);
     // Shows a selected annotation's color and size; not saved as the default.
     void showStyle(const QColor &color, int sizeLevel, bool fill);
 
@@ -65,11 +68,12 @@ signals:
     void actionRequested(CaptureAction action);
 
 private:
+    void updateOptionsVisibility();
+
     // With an icon (assets/icons/<icon>.svg) the button shows only the icon; text and shortcut
     // go into the tooltip.
-    QToolButton *addButton(QHBoxLayout *layout, const QString &text, const QString &shortcut,
+    QToolButton *addButton(QLayout *layout, const QString &text, const QString &shortcut,
                            const char *icon = nullptr);
-    void addSeparator(QHBoxLayout *layout);
     QWidget *buildOptions();
 
     Tool m_tool = Tool::None;
@@ -81,7 +85,7 @@ private:
     QToolButton *m_undo = nullptr;
     QToolButton *m_redo = nullptr;
     QWidget *m_options = nullptr;
-    bool m_optionsForced = false;
+    std::optional<bool> m_selectedAnnotationHasStyle;
     bool m_pinEditing = false;
     QToolButton *m_done = nullptr;
     QList<QToolButton *> m_captureOnly; // hidden while editing a pin

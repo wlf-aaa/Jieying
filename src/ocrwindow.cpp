@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "icons.h"
+#include "tableocrdialog.h"
 #include "translator.h"
 
 #include <QApplication>
@@ -186,6 +187,18 @@ OcrWindow::OcrWindow(const QImage &image, QWidget *parent)
         QApplication::clipboard()->setText(m_translation->toPlainText());
         m_status->setText(tr("译文已复制到剪贴板"));
     });
+    const auto engine = Config::ocrEngine();
+    auto *recognizeTable = new QPushButton(tr("识别表格…"), this);
+    recognizeTable->setObjectName(QStringLiteral("recognizeTable"));
+    connect(recognizeTable, &QPushButton::clicked, this, [this, image, engine] {
+        if (!m_tableDialog) {
+            m_tableDialog = new TableOcrDialog(image, engine, this);
+            connect(m_tableDialog, &TableOcrDialog::copied, this, [this] { m_tableCopied = true; });
+        }
+        m_tableDialog->show();
+        m_tableDialog->raise();
+        m_tableDialog->activateWindow();
+    });
     auto *close = new QPushButton(tr("关闭"), this);
     connect(close, &QPushButton::clicked, this, &QWidget::close);
 
@@ -194,6 +207,7 @@ OcrWindow::OcrWindow(const QImage &image, QWidget *parent)
     buttons->addWidget(m_translate);
     buttons->addWidget(m_copyTranslation);
     buttons->addWidget(m_copy);
+    buttons->addWidget(recognizeTable);
     buttons->addWidget(close);
 
     auto *layout = new QVBoxLayout(this);
@@ -201,8 +215,7 @@ OcrWindow::OcrWindow(const QImage &image, QWidget *parent)
     layout->addLayout(buttons);
 
     connect(&m_watcher, &QFutureWatcher<OcrResult>::finished, this, [this] { showResult(m_watcher.result()); });
-    m_watcher.setFuture(
-        QtConcurrent::run([image, engine = Config::ocrEngine()] { return Ocr::recognize(image, engine); }));
+    m_watcher.setFuture(QtConcurrent::run([image, engine] { return Ocr::recognize(image, engine); }));
 #ifdef JIEYING_HAVE_ZXING
     connect(&m_codeWatcher, &QFutureWatcher<QList<Barcode>>::finished, this,
             [this] { showCodes(m_codeWatcher.result()); });
@@ -331,9 +344,10 @@ void OcrWindow::displayText()
         m_preview->setLines(result.lines);
         m_copy->setEnabled(true);
         m_translate->setEnabled(true);
-        m_copy->setFocus();
+        if (!m_tableDialog || !m_tableDialog->isVisible())
+            m_copy->setFocus();
         QString status = tr("识别到 %1 行 · %2 · 点击左侧文字框可定位到对应行").arg(result.lines.size()).arg(result.language);
-        if (Config::ocrAutoCopy()) {
+        if (Config::ocrAutoCopy() && !m_tableCopied) {
             QApplication::clipboard()->setText(result.text());
             status = tr("已复制到剪贴板 · ") + status;
         }

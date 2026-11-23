@@ -14,7 +14,7 @@
 
 class QPainter;
 
-enum class Tool { None, Rect, Ellipse, Line, Arrow, Pen, Highlighter, Text, Mosaic, Blur, Number, Eraser, Ruler };
+enum class Tool { None, Rect, Ellipse, Line, Arrow, Pen, Highlighter, Text, Mosaic, Blur, Number, Eraser, Ruler, Spotlight };
 
 // Sizes are in the same physical pixels as the annotation geometry.
 struct AnnotationStyle
@@ -48,12 +48,14 @@ public:
 
     virtual int number() const { return 0; }                   // non-zero for numbered markers
     virtual std::optional<QString> text() const { return {}; } // text marks only
+    virtual QRectF spotlightRect() const { return {}; }        // clear area in the spotlight mask
     virtual QPointF anchor() const = 0;                        // top-left for text, origin otherwise
     virtual AnnotationStyle style() const = 0;
 };
 
 // Rect, Ellipse, Line, Arrow or Ruler (a measured line labelled with its length) from -> to.
 AnnotationPtr makeShape(Tool tool, const QPoint &from, const QPoint &to, const AnnotationStyle &style);
+AnnotationPtr makeSpotlight(const QRectF &rect);
 // A pen stroke; the highlighter is a wide translucent one that multiplies onto the image,
 // so dark text under it stays dark.
 AnnotationPtr makeStroke(const QPolygonF &points, const AnnotationStyle &style, bool highlighter = false);
@@ -99,8 +101,8 @@ public:
     void commitEdit();
     void cancelEdit();
 
-    // Paints every annotation, then draft (an in-progress one) on top if given.
-    void paint(QPainter &p, const AnnotationPtr &draft = nullptr) const;
+    // Paints the spotlight mask within bounds, then ordinary marks and the current draft.
+    void paint(QPainter &p, const QRect &bounds, const AnnotationPtr &draft = nullptr) const;
 
 private:
     QList<AnnotationPtr> m_items;

@@ -45,9 +45,10 @@ void CaptureSession::start()
         connect(overlay, &SelectionOverlay::cancelled, this, &CaptureSession::finish);
         // Overlays are topmost, so they go before any dialog, pin or capture panel appears.
         connect(overlay, &SelectionOverlay::actionTriggered, this,
-                [this](CaptureAction action, const QPixmap &image, const QPoint &globalTopLeft) {
+                [this, overlay, screen](CaptureAction action, const QPixmap &image, const QPoint &globalTopLeft) {
+                    const ScreenshotArea area = overlay->captureArea();
                     closeOverlays();
-                    emit imageAction(action, image, globalTopLeft);
+                    emit imageAction(action, image, globalTopLeft, screen, area);
                     finish();
                 });
         connect(overlay, &SelectionOverlay::regionActionTriggered, this,

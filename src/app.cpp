@@ -3,8 +3,11 @@
 #include "beautifydialog.h"
 #include "capturehistory.h"
 #include "capturesession.h"
+#include "collagedialog.h"
+#include "historydialog.h"
 #include "hotkeymanager.h"
 #include "imageio.h"
+#include "livepindialog.h"
 #include "ocr.h"
 #include "ocrwindow.h"
 #include "pinboard.h"
@@ -69,6 +72,12 @@ bool App::init()
     m_hotkeys = new HotkeyManager(this);
     connect(m_hotkeys, &HotkeyManager::triggered, this, &App::onHotkey);
     connect(m_hotkeys, &HotkeyManager::changed, this, &App::updateTrayTexts);
+    connect(m_hotkeys, &HotkeyManager::fullscreenPauseChanged, this, &App::updateTrayTexts);
+    m_fullscreenPoll = new QTimer(this);
+    m_fullscreenPoll->setInterval(200);
+    connect(m_fullscreenPoll, &QTimer::timeout, this, [this] {
+        m_hotkeys->setPausedForFullscreen(foregroundAppIsFullscreen());
+    });
 
     createTray();
     const QList<Config::Hotkey> taken = m_hotkeys->registerAll();
@@ -78,6 +87,7 @@ bool App::init()
             names << QStringLiteral("%1（%2）").arg(keyText(hotkey), Config::hotkeyName(hotkey));
         notify(tr("快捷键 %1 已被其他程序占用，可在托盘菜单「设置」里更换。").arg(names.join(QStringLiteral("、"))));
     }
+    configureFullscreenHotkeyPause(Config::pauseHotkeysInFullscreen());
     return true;
 }
 
@@ -110,18 +120,31 @@ void App::createTray()
     });
     menu->addAction(tr("截取全屏"), this,
                     [this] { QTimer::singleShot(kMenuCloseDelayMs, this, &App::captureScreenUnderCursor); });
+    m_repeatCaptureAction = menu->addAction(tr("重截上次选区"), this, [this] {
+        QTimer::singleShot(kMenuCloseDelayMs, this, &App::repeatCapture);
+    });
     QMenu *delayed = menu->addMenu(tr("延时截图"));
     for (int seconds : {3, 5, 10})
         delayed->addAction(tr("%1 秒后").arg(seconds), this, [this, seconds] { startDelayedCapture(seconds); });
+
+    menu->addSeparator();
     m_pinAction = menu->addAction(tr("贴剪贴板图片"), this, &App::pinClipboard);
-    QMenu *recent = menu->addMenu(tr("最近截图"));
-    connect(recent, &QMenu::aboutToShow, this, [this, recent] { fillHistoryMenu(recent); });
+    menu->addAction(tr("实时窗口贴图…"), this, &App::showLivePin);
     m_togglePinsAction = menu->addAction(tr("隐藏/显示当前贴图"), this, &App::togglePins);
     QMenu *groups = menu->addMenu(tr("贴图分组"));
     connect(groups, &QMenu::aboutToShow, this, [this, groups] { m_board->fillMenu(groups); });
     m_restoreClicksAction = menu->addAction(tr("恢复贴图的鼠标操作"), this, &App::restorePinClicks);
+    QAction *restoreLast = menu->addAction(tr("恢复最近关闭的贴图"), this, &App::restoreLastPin);
     menu->addAction(tr("关闭全部贴图"), this, &App::closeAllPins);
-    connect(menu, &QMenu::aboutToShow, this, [this] {
+
+    menu->addSeparator();
+    QMenu *recent = menu->addMenu(tr("最近截图"));
+    connect(recent, &QMenu::aboutToShow, this, [this, recent] { fillHistoryMenu(recent); });
+    menu->addAction(tr("多图拼排…"), this, [this] { showCollage(); });
+
+    connect(menu, &QMenu::aboutToShow, this, [this, restoreLast] {
+        m_repeatCaptureAction->setEnabled(m_lastCaptureScreen && !m_lastCaptureArea.bounds.isEmpty());
+        restoreLast->setEnabled(m_board->canRestoreLastClosed());
         m_restoreClicksAction->setVisible(m_board->anyClickThrough());
     });
     menu->addSeparator();
@@ -141,6 +164,7 @@ void App::createTray()
 void App::updateTrayTexts()
 {
     m_captureAction->setShortcut(Config::hotkey(Config::Hotkey::Capture));
+    m_repeatCaptureAction->setShortcut(Config::hotkey(Config::Hotkey::RepeatCapture));
     m_pinAction->setShortcut(Config::hotkey(Config::Hotkey::PinClipboard));
     m_togglePinsAction->setShortcut(Config::hotkey(Config::Hotkey::TogglePins));
     QString tip = tr("截影");
@@ -148,11 +172,27 @@ void App::updateTrayTexts()
         tip += QStringLiteral("\n%1 %2").arg(keyText(Config::Hotkey::Capture), tr("截图"));
     if (!Config::hotkey(Config::Hotkey::PinClipboard).isEmpty())
         tip += QStringLiteral("\n%1 %2").arg(keyText(Config::Hotkey::PinClipboard), tr("贴剪贴板图片"));
+    if (m_hotkeys->pausedForFullscreen())
+        tip += QStringLiteral("\n") + tr("全屏应用期间已暂停全局快捷键");
     m_tray->setToolTip(tip);
+}
+
+void App::configureFullscreenHotkeyPause(bool enabled)
+{
+    if (enabled)
+        m_fullscreenPoll->start();
+    else
+        m_fullscreenPoll->stop();
+    m_hotkeys->setPausedForFullscreen(enabled && foregroundAppIsFullscreen());
 }
 
 void App::onHotkey(Config::Hotkey hotkey)
 {
+    // Check again in case the foreground changed since the timer last ran.
+    if (m_fullscreenPoll->isActive() && foregroundAppIsFullscreen()) {
+        m_hotkeys->setPausedForFullscreen(true);
+        return;
+    }
     switch (hotkey) {
     case Config::Hotkey::Capture:
         startCapture();
@@ -178,6 +218,9 @@ void App::onHotkey(Config::Hotkey hotkey)
     case Config::Hotkey::CaptureWindow:
         captureActiveWindow();
         break;
+    case Config::Hotkey::RepeatCapture:
+        repeatCapture();
+        break;
     case Config::Hotkey::NextPinGroup:
         m_board->nextGroup();
         break;
@@ -202,6 +245,29 @@ void App::captureActiveWindow()
         startCapture(std::nullopt, window);
 }
 
+void App::repeatCapture()
+{
+    if (m_session || m_scrollCapture || m_pinEditor || m_recorder)
+        return;
+
+    QScreen *screen = m_lastCaptureScreen.data();
+    if (!screen || m_lastCaptureArea.bounds.isEmpty()) {
+        notify(tr("请先在当前显示器上截一次图，再重截选区。"));
+        return;
+    }
+
+    const QPixmap desktop = screen->grabWindow(0);
+    QPixmap image = QPixmap::fromImage(m_lastCaptureArea.render(desktop.toImage()));
+    if (image.isNull()) {
+        notify(tr("无法重截该选区，请重新选择截图区域。"));
+        return;
+    }
+    const qreal dpr = screen->devicePixelRatio();
+    image.setDevicePixelRatio(dpr);
+    const QPoint topLeft = screen->geometry().topLeft() + (QPointF(m_lastCaptureArea.bounds.topLeft()) / dpr).toPoint();
+    deliver(SelectionOverlay::configuredConfirmAction(), image, topLeft);
+}
+
 void App::startCapture(std::optional<CaptureAction> autoAction, const QRect &preselect)
 {
     if (m_recorder) { // capture and record hotkeys double as "stop recording"
@@ -220,7 +286,13 @@ void App::startCapture(std::optional<CaptureAction> autoAction, const QRect &pre
 
     m_session = new CaptureSession(autoAction, this);
     m_session->setPreselection(preselect);
-    connect(m_session, &CaptureSession::imageAction, this, &App::deliver);
+    connect(m_session, &CaptureSession::imageAction, this,
+            [this](CaptureAction action, const QPixmap &image, const QPoint &topLeft, QScreen *screen,
+                   const ScreenshotArea &area) {
+                m_lastCaptureScreen = screen;
+                m_lastCaptureArea = area;
+                deliver(action, image, topLeft);
+            });
     connect(m_session, &CaptureSession::regionRequested, this, &App::startRegionMode);
     connect(m_session, &CaptureSession::finished, m_session, &QObject::deleteLater);
     m_session->start();
@@ -269,6 +341,8 @@ void App::startDelayedCapture(int seconds)
 void App::fillHistoryMenu(QMenu *menu)
 {
     menu->clear();
+    menu->addAction(tr("打开截图历史…"), this, &App::showHistory);
+    menu->addSeparator();
     const QList<QFileInfo> entries = m_history->entries();
     if (entries.isEmpty()) {
         menu->addAction(Config::historySize() > 0 ? tr("（还没有截图）") : tr("（已在设置中关闭）"))->setEnabled(false);
@@ -289,6 +363,46 @@ void App::fillHistoryMenu(QMenu *menu)
         QDesktopServices::openUrl(QUrl::fromLocalFile(m_history->folder()));
     });
     menu->addAction(tr("清空历史"), m_history, &CaptureHistory::clear)->setEnabled(!entries.isEmpty());
+}
+
+void App::showHistory()
+{
+    if (!m_historyDialog) {
+        m_historyDialog = new HistoryDialog(m_history);
+        m_historyDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(m_historyDialog, &HistoryDialog::pinRequested, this, [this](const QPixmap &image) {
+            pinAtCursor(image.toImage());
+        });
+        connect(m_historyDialog, &HistoryDialog::collageRequested, this, &App::showCollage);
+    }
+    m_historyDialog->show();
+    m_historyDialog->raise();
+    m_historyDialog->activateWindow();
+}
+
+void App::showCollage(const QStringList &paths)
+{
+    if (!m_collageDialog)
+        m_collageDialog = new CollageDialog;
+    if (!paths.isEmpty())
+        m_collageDialog->addImages(paths);
+    m_collageDialog->setWindowState(m_collageDialog->windowState() & ~Qt::WindowMinimized);
+    m_collageDialog->show();
+    m_collageDialog->raise();
+    m_collageDialog->activateWindow();
+}
+
+void App::showLivePin()
+{
+    if (!m_livePinDialog) {
+        m_livePinDialog = new LivePinDialog;
+        m_livePinDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(m_livePinDialog, &LivePinDialog::freezeRequested, this, &App::addPin);
+    }
+    m_livePinDialog->setWindowState(m_livePinDialog->windowState() & ~Qt::WindowMinimized);
+    m_livePinDialog->show();
+    m_livePinDialog->raise();
+    m_livePinDialog->activateWindow();
 }
 
 void App::pinAtCursor(const QImage &image)
@@ -312,26 +426,43 @@ void App::togglePins()
 void App::closeAllPins()
 {
     m_board->closeAll();
+    if (m_livePinDialog)
+        m_livePinDialog->close();
 }
 
 void App::showSettings()
 {
-    if (!m_settings)
+    if (!m_settings) {
         m_settings = new SettingsDialog(m_hotkeys);
+        connect(m_settings, &SettingsDialog::fullscreenHotkeyPauseEnabled, this, &App::configureFullscreenHotkeyPause);
+    }
     m_settings->show();
     m_settings->raise();
     m_settings->activateWindow();
 }
 
-void App::addPin(const QPixmap &image, const QPoint &contentTopLeft)
+void App::addPin(const QPixmap &image, const QPoint &contentTopLeft, qreal initialScale)
 {
-    auto *pin = new PinWindow(image, contentTopLeft);
+    auto *pin = new PinWindow(image, contentTopLeft, initialScale);
+    connectPinActions(pin);
+    m_board->add(pin);
+    pin->activateWindow();
+}
+
+void App::connectPinActions(PinWindow *pin)
+{
     connect(pin, &PinWindow::ocrRequested, this, &App::showOcr);
     connect(pin, &PinWindow::annotateRequested, this, [this, pin] { annotatePin(pin); });
     connect(pin, &PinWindow::beautifyRequested, this, &App::showBeautify);
     connect(pin, &PinWindow::imagesDropped, this, &App::pinImagesAt);
-    m_board->add(pin);
-    pin->activateWindow();
+}
+
+void App::restoreLastPin()
+{
+    if (PinWindow *pin = m_board->restoreLastClosed()) {
+        connectPinActions(pin);
+        pin->activateWindow();
+    }
 }
 
 void App::annotatePin(PinWindow *pin)

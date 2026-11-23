@@ -144,12 +144,21 @@ QWidget *SettingsDialog::buildGeneralPage()
     history->setValue(Config::historySize());
     connect(history, &QSpinBox::valueChanged, this, &Config::setHistorySize);
     form->addRow(tr("保留最近截图："), history);
-    form->addRow(QString(), hint(tr("可从托盘菜单「最近截图」重新贴出。图片只保存在本机，卸载时删除。"), widget));
+    form->addRow(QString(), hint(tr("从托盘菜单「最近截图」可打开历史面板。图片只保存在本机，卸载时删除。"), widget));
 
     auto *magnifier = new QCheckBox(tr("截图时显示放大镜和颜色值"), widget);
     magnifier->setChecked(Config::showMagnifier());
     connect(magnifier, &QCheckBox::toggled, this, &Config::setShowMagnifier);
     form->addRow(QString(), magnifier);
+
+    const QStringList wheelActions{tr("缩放"), tr("调整不透明度"), tr("禁用")};
+    for (bool control : {false, true}) {
+        auto *action = enumCombo(wheelActions, Config::pinWheelAction(control), widget);
+        action->setObjectName(control ? QStringLiteral("pinCtrlWheelAction") : QStringLiteral("pinWheelAction"));
+        connect(action, &QComboBox::currentIndexChanged, this,
+                [control](int index) { Config::setPinWheelAction(control, Config::PinWheelAction(index)); });
+        form->addRow(control ? tr("贴图 Ctrl+滚轮：") : tr("贴图滚轮："), action);
+    }
     return widget;
 }
 
@@ -175,6 +184,19 @@ QWidget *SettingsDialog::buildHotkeyPage()
                                     "若按键被占用，可更换按键或关闭占用它的程序。"),
                                  widget));
     form->addRow(hint(tr("点击输入框后按下新的组合键；用 × 清除。全局生效，在任何程序里都能用。"), widget));
+
+    auto *pauseFullscreen = new QCheckBox(tr("前台应用全屏时暂停全局快捷键"), widget);
+    pauseFullscreen->setObjectName(QStringLiteral("pauseHotkeysInFullscreen"));
+    pauseFullscreen->setChecked(Config::pauseHotkeysInFullscreen());
+    connect(pauseFullscreen, &QCheckBox::toggled, this, [this](bool enabled) {
+        Config::setPauseHotkeysInFullscreen(enabled);
+        emit fullscreenHotkeyPauseEnabled(enabled);
+    });
+    form->addRow(pauseFullscreen);
+    connect(m_hotkeys, &HotkeyManager::fullscreenPauseChanged, pauseFullscreen, [this] {
+        for (Config::Hotkey hotkey : Config::kHotkeys)
+            showHotkeyStatus(hotkey, {}, false);
+    });
 
     for (Config::Hotkey hotkey : Config::kHotkeys) {
         auto *edit = new QKeySequenceEdit(Config::hotkey(hotkey), widget);
@@ -246,6 +268,9 @@ void SettingsDialog::showHotkeyStatus(Config::Hotkey hotkey, const QString &erro
         status->setStyleSheet("color: #d93025;");
     } else if (Config::hotkey(hotkey).isEmpty()) {
         status->setText(tr("未设置"));
+        status->setStyleSheet("color: #777;");
+    } else if (m_hotkeys->pausedForFullscreen()) {
+        status->setText(tr("全屏时暂停"));
         status->setStyleSheet("color: #777;");
     } else if (justApplied || m_hotkeys->isRegistered(hotkey)) {
         // Just applied: change() verified the key while hotkeys were suspended for typing.

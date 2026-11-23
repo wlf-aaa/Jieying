@@ -34,3 +34,31 @@ private:
     std::unique_ptr<Private> d;
     QString m_error;
 };
+
+struct WindowCaptureFrame
+{
+    enum class Status { NoFrame, Frame, Resizing, Closed, Error };
+
+    Status status = Status::NoFrame;
+    QImage image;
+};
+
+// Window-only WGC on the calling thread. Polling never waits for a new frame or
+// for the GPU readback. A frame's size is always in source pixels.
+class WgcWindowGrabber
+{
+public:
+    WgcWindowGrabber();
+    ~WgcWindowGrabber();
+
+    static bool isSupported();
+    bool start(quintptr window);
+    WindowCaptureFrame poll();
+    void stop();
+    QString error() const { return m_error; }
+
+private:
+    struct Private;
+    std::unique_ptr<Private> d;
+    QString m_error;
+};

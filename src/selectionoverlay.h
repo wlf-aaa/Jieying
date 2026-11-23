@@ -3,6 +3,7 @@
 #include "annotations.h"
 #include "ocr.h"
 #include "capturetoolbar.h"
+#include "screengrab.h"
 #include "windowfinder.h"
 
 #include <QImage>
@@ -42,6 +43,8 @@ public:
     // Starts with this region already selected (full screen / active window); it can still be
     // adjusted, annotated or replaced like a dragged selection.
     void preselect(const QRect &physicalRegion);
+    ScreenshotArea captureArea() const;
+    static CaptureAction configuredConfirmAction();
 
     // Freeform: the region is drawn by hand; outside the shape the result is transparent.
     // F toggles it while choosing a region.
@@ -79,6 +82,8 @@ private:
     QRect regionAt(const QPoint &pos) const;
     QRect currentRegion() const;
     int edgesAt(const QPointF &pos) const;
+    int spotlightHandleAt(const QPointF &pos) const;
+    static Qt::CursorShape resizeCursor(int edges);
     void moveSelectionTo(QRect rect);
     void resetToHover();
     void updateCursor(const QPointF &pos);
@@ -89,6 +94,7 @@ private:
     void onToolChanged();
     void updateDraft(Qt::KeyboardModifiers modifiers);
     void finishDraft();
+    void updateAnnotationDrag();
     // Removes every mark the eraser touches on its way from -> to (a fast flick skips pixels).
     void eraseAlong(const QPoint &from, const QPoint &to);
     // Recognizes the selection's text in the background and pixelates personal data in it.
