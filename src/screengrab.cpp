@@ -39,7 +39,10 @@ QImage ScreenshotArea::render(const QImage &screen, const AnnotationStack *annot
 
     QImage image = mask.isEmpty() ? screen.copy(bounds)
                                   : QImage(bounds.size(), QImage::Format_ARGB32_Premultiplied);
-    if (image.isNull() || (mask.isEmpty() && !annotations))
+    if (image.isNull())
+        return {};
+    image.setDevicePixelRatio(1);
+    if (mask.isEmpty() && !annotations)
         return image;
     if (!mask.isEmpty())
         image.fill(Qt::transparent);
@@ -49,7 +52,7 @@ QImage ScreenshotArea::render(const QImage &screen, const AnnotationStack *annot
     if (!mask.isEmpty()) {
         painter.setRenderHint(QPainter::Antialiasing);
         painter.setClipPath(mask);
-        painter.drawImage(bounds.topLeft(), screen, bounds);
+        painter.drawImage(bounds, screen, bounds);
     }
     if (annotations)
         annotations->paint(painter, bounds);

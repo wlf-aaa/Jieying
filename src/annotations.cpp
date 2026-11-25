@@ -455,16 +455,17 @@ public:
             const int radius = qMax(2, qRound(style.mosaicCell));
             const QRect around = rect.adjusted(-2 * radius, -2 * radius, 2 * radius, 2 * radius) & source.rect();
             m_pixels = blurred(source.copy(around), radius).copy(rect.translated(-around.topLeft()));
-            return;
+        } else {
+            // Downscale then upscale without smoothing: each cell becomes one flat average color.
+            const int cell = qMax(2, qRound(style.mosaicCell));
+            const QImage small = source.copy(rect).scaled(qMax(1, rect.width() / cell), qMax(1, rect.height() / cell),
+                                                          Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            m_pixels = small.scaled(rect.size(), Qt::IgnoreAspectRatio, Qt::FastTransformation);
         }
-        // Downscale then upscale without smoothing: each cell becomes one flat average color.
-        const int cell = qMax(2, qRound(style.mosaicCell));
-        const QImage small = source.copy(rect).scaled(qMax(1, rect.width() / cell), qMax(1, rect.height() / cell),
-                                                      Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-        m_pixels = small.scaled(rect.size(), Qt::IgnoreAspectRatio, Qt::FastTransformation);
+        m_pixels.setDevicePixelRatio(1);
     }
 
-    void paint(QPainter &p) const override { p.drawImage(m_rect.topLeft(), m_pixels); }
+    void paint(QPainter &p) const override { p.drawImage(m_rect, m_pixels); }
 
     QPainterPath hitArea(qreal tolerance) const override
     {

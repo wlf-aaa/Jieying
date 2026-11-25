@@ -89,6 +89,7 @@ SelectionOverlay::SelectionOverlay(QScreen *screen, const QPixmap &shot, const Q
     setMouseTracking(true);
     setCursor(Qt::CrossCursor);
     m_shot.setDevicePixelRatio(m_dpr);
+    m_image.setDevicePixelRatio(1);
 
     // Qt keeps a screen's logical top-left equal to its native one, so the logical origin
     // translates global physical window rects into this screen's physical space.

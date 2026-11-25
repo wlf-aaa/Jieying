@@ -1000,6 +1000,85 @@ void testFixedRegion(const QDir &out)
     }
 }
 
+void testHighDpiRender()
+{
+    const QColor red("#FF3B30");
+    for (qreal dpr : {1.5, 2.0}) {
+        QImage screen(600, 400, QImage::Format_RGB32);
+        screen.fill(Qt::white);
+        screen.setDevicePixelRatio(dpr);
+
+        const QRect bounds(60, 60, 400, 300);
+        AnnotationStack stack;
+        const AnnotationStyle style{red, 4 * dpr, 20 * dpr, 10 * dpr, false};
+        stack.add(makeShape(Tool::Rect, QPoint(160, 140), QPoint(280, 220), style));
+
+        const QImage rendered = ScreenshotArea{bounds, {}}.render(screen, &stack);
+        const bool onBox = rendered.size() == bounds.size() && rendered.pixelColor(100, 120) == red
+                           && rendered.pixelColor(220, 120) == red && rendered.pixelColor(160, 80) == red
+                           && rendered.pixelColor(160, 160) == red;
+        const bool notDrifted = rendered.pixelColor(qRound(100 * dpr), qRound(120 * dpr)) == Qt::white
+                                && rendered.pixelColor(160, 120) == Qt::white;
+        check(onBox && notDrifted,
+              dpr > 1.75 ? "hidpi: 2x render keeps annotations at exact physical coordinates"
+                         : "hidpi: 1.5x render keeps annotations at exact physical coordinates");
+
+        // Mosaic on a HiDPI source must cover its whole physical rect instead of shrinking by 1/dpr.
+        // Alternating 1-pixel black/white rows average to mid-gray only where the mosaic is painted.
+        QImage striped(600, 400, QImage::Format_RGB32);
+        striped.fill(Qt::white);
+        for (int y = 100; y < 220; ++y) {
+            const QRgb rowColor = (y % 2) ? qRgb(0, 0, 0) : qRgb(255, 255, 255);
+            for (int x = 120; x < 300; ++x)
+                striped.setPixel(x, y, rowColor);
+        }
+        striped.setDevicePixelRatio(dpr);
+        AnnotationStack mosaicStack;
+        mosaicStack.add(makeMosaic(QRect(120, 100, 180, 120), striped, style, false));
+        const QImage mosaicOut = ScreenshotArea{bounds, {}}.render(striped, &mosaicStack);
+        const auto isMidGray = [](const QColor &c) { return c.red() > 60 && c.red() < 200; };
+        check(isMidGray(mosaicOut.pixelColor(65, 45)) && isMidGray(mosaicOut.pixelColor(235, 155)),
+              dpr > 1.75 ? "hidpi: 2x mosaic fills its full physical rect"
+                         : "hidpi: 1.5x mosaic fills its full physical rect");
+
+        // Freeform crop on a HiDPI source must fill the whole mask, not shrink the source by 1/dpr.
+        QImage blue(600, 400, QImage::Format_RGB32);
+        blue.fill(Qt::blue);
+        blue.setDevicePixelRatio(dpr);
+        QPainterPath mask;
+        mask.addRect(QRectF(bounds));
+        const QImage freeformOut = ScreenshotArea{bounds, mask}.render(blue);
+        check(freeformOut.pixelColor(350, 250) == Qt::blue,
+              dpr > 1.75 ? "hidpi: 2x freeform render does not shrink source pixels"
+                         : "hidpi: 1.5x freeform render does not shrink source pixels");
+    }
+
+    // End-to-end SelectionOverlay with a HiDPI QPixmap (like QScreen::grabWindow(0) returns on Windows).
+    for (QScreen *screen : QGuiApplication::screens()) {
+        const qreal dpr = screen->devicePixelRatio();
+        QImage page(screen->geometry().size() * dpr, QImage::Format_RGB32);
+        page.fill(Qt::white);
+        QPixmap shot = QPixmap::fromImage(page);
+        shot.setDevicePixelRatio(dpr);
+
+        SelectionOverlay overlay(screen, shot, {});
+        QImage copied;
+        QObject::connect(&overlay, &SelectionOverlay::actionTriggered,
+                         [&](CaptureAction, const QPixmap &image, const QPoint &) { copied = image.toImage(); });
+        overlay.show();
+        check(QTest::qWaitForWindowExposed(&overlay), "hidpi overlay: exposed");
+        const QPoint origin(40, 40);
+        drag(&overlay, origin, {340, 280});
+        selectTool(&overlay, 1);
+        drag(&overlay, {100, 100}, {180, 160});
+        QTest::keyClick(&overlay, Qt::Key_Return);
+        const QPoint expectedEdge = (QPoint(100, 130) - origin) * dpr;
+        const QPoint expectedInterior = (QPoint(140, 130) - origin) * dpr;
+        check(copied.pixelColor(expectedEdge) == red && copied.pixelColor(expectedInterior) == Qt::white,
+              "hidpi overlay: exported rectangle stays aligned when shot carries screen DPR");
+    }
+}
+
 int main(int argc, char *argv[])
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -1115,6 +1194,7 @@ int main(int argc, char *argv[])
     testRestoreClosedPin();
     testRestoreAfterClosingAllPins();
     testRulerAndFreeform(out);
+    testHighDpiRender();
 
     std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "OK", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;
